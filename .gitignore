@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Environment
+.env
+
+# Data
+*.db
+media/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# uv
+.python-version
+
+docs/
+.claude/

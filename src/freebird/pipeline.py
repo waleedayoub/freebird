@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+
+from freebird.analysis.birdnet import BirdAnalyzer
+from freebird.bot.telegram import TelegramBot
+from freebird.config import POLL_INTERVAL_SECONDS
+from freebird.media.downloader import download_image, download_video, extract_audio
+from freebird.storage.database import Database
+from freebird.vicohome.api import VicoHomeAPI
+from freebird.vicohome.models import MotionEvent
+
+logger = logging.getLogger(__name__)
+
+# Alert if pipeline hasn't processed successfully for this many seconds
+ERROR_ALERT_THRESHOLD = 5 * 60
+
+
+class Pipeline:
+    def __init__(
+        self,
+        api: VicoHomeAPI,
+        db: Database,
+        bot: TelegramBot,
+        analyzer: BirdAnalyzer,
+    ) -> None:
+        self.api = api
+        self.db = db
+        self.bot = bot
+        self.analyzer = analyzer
+        self._last_success: float = time.time()
+        self._error_alerted: bool = False
+
+    async def run(self) -> None:
+        logger.info("Pipeline started (polling every %ds)", POLL_INTERVAL_SECONDS)
+
+        # Bootstrap: check last hour on first run
+        await self._poll_cycle()
+
+        while True:
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            try:
+                await self._poll_cycle()
+                self._last_success = time.time()
+                self._error_alerted = False
+            except Exception:
+                logger.exception("Pipeline poll cycle failed")
+                elapsed = time.time() - self._last_success
+                if elapsed > ERROR_ALERT_THRESHOLD and not self._error_alerted:
+                    await self.bot.send_error_alert(
+                        f"Pipeline has been failing for {int(elapsed)}s. Check logs."
+                    )
+                    self._error_alerted = True
+
+    async def _poll_cycle(self) -> None:
+        now = int(time.time())
+        # Look back 1 hour to catch any events we might have missed
+        start = now - 3600
+        events = self.api.get_events(start_timestamp=start, end_timestamp=now)
+
+        new_count = 0
+        for event in events:
+            if self.db.has_trace_id(event.trace_id):
+                continue
+            new_count += 1
+            await self._process_event(event)
+
+        if new_count:
+            logger.info("Processed %d new events", new_count)
+
+    async def _process_event(self, event: MotionEvent) -> None:
+        logger.info("Processing event %s from %s", event.trace_id, event.device_name)
+
+        # Step 1: Download keyshot image
+        image_path = download_image(event.keyshot_url, event.trace_id)
+
+        # Step 2: Store initial sighting (for dedup)
+        sighting_id = self.db.insert_sighting(
+            trace_id=event.trace_id,
+            timestamp=event.timestamp,
+            device_name=event.device_name,
+            image_path=str(image_path) if image_path else None,
+        )
+
+        # Step 3: Send quick notification with keyshot
+        message_id = await self.bot.send_motion_alert(image_path)
+
+        # Step 4: Download video (background)
+        video_path = await download_video(event.video_url, event.trace_id)
+
+        # Step 5: Extract audio and run BirdNET
+        species = None
+        species_latin = None
+        confidence = None
+        is_lifer = False
+
+        if video_path:
+            audio_path = await extract_audio(video_path, event.trace_id)
+            if audio_path:
+                detection = self.analyzer.analyze(audio_path)
+                if detection:
+                    species = detection.species
+                    species_latin = detection.species_latin
+                    confidence = detection.confidence
+                    is_lifer = self.db.is_lifer(species)
+
+                self.db.update_media_paths(
+                    sighting_id,
+                    video_path=str(video_path),
+                    audio_path=str(audio_path),
+                )
+
+        # Step 6: Check VicoHome's own bird ID as fallback
+        if not species and event.bird_name:
+            species = event.bird_name
+            species_latin = event.bird_latin
+            confidence = event.bird_confidence
+            is_lifer = self.db.is_lifer(species)
+            logger.info("Using VicoHome ID: %s (%.0f%%)", species,
+                        (confidence or 0) * 100)
+
+        # Step 7: Update DB with species info
+        self.db.update_species(sighting_id, species, species_latin, confidence, is_lifer)
+
+        # Step 8: Edit Telegram message with species
+        if message_id is not None:
+            await self.bot.update_with_species(message_id, species, confidence, is_lifer)
+
+        if is_lifer:
+            logger.info("NEW LIFER: %s", species)
