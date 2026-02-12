@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from freebird.analysis.birdnet import BirdAnalyzer
+from freebird.analysis.vision import analyze_image
 from freebird.bot.telegram import TelegramBot
 from freebird.config import POLL_INTERVAL_SECONDS
 from freebird.media.downloader import download_image, download_video, extract_audio
@@ -85,20 +86,29 @@ class Pipeline:
             image_path=str(image_path) if image_path else None,
         )
 
-        # Step 3: Download video
-        video_path = await download_video(event.video_url, event.trace_id)
-
-        # Step 4: Extract audio and run BirdNET
+        # Step 3: Vision analysis on keyshot (primary species source)
         species = None
         species_latin = None
         confidence = None
         is_lifer = False
 
+        if image_path:
+            vision = analyze_image(image_path, sighting_id, self.db)
+            if vision and vision.is_bird and vision.species:
+                species = vision.species
+                species_latin = vision.species_latin
+                confidence_map = {"high": 0.9, "medium": 0.7, "low": 0.4}
+                confidence = confidence_map.get(vision.confidence or "", 0.5)
+                is_lifer = self.db.is_lifer(species)
+
+        # Step 4: Download video + BirdNET as supplementary
+        video_path = await download_video(event.video_url, event.trace_id)
         if video_path:
             audio_path = await extract_audio(video_path, event.trace_id)
             if audio_path:
                 detection = self.analyzer.analyze(audio_path)
-                if detection:
+                # Use BirdNET result if vision didn't identify a species
+                if not species and detection:
                     species = detection.species
                     species_latin = detection.species_latin
                     confidence = detection.confidence

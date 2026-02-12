@@ -236,6 +236,7 @@ class TelegramBot:
         if not question:
             return
 
+        user_name = update.effective_user.first_name or ""
         await update.message.reply_chat_action("typing")
-        answer = await ask_claude(question, self.db)
+        answer = await ask_claude(question, self.db, user_name=user_name)
         await update.message.reply_text(answer)

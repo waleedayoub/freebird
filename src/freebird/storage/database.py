@@ -29,6 +29,38 @@ CREATE TABLE IF NOT EXISTS sightings (
 CREATE INDEX IF NOT EXISTS idx_sightings_species ON sightings(species);
 CREATE INDEX IF NOT EXISTS idx_sightings_timestamp ON sightings(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sightings_trace_id ON sightings(trace_id);
+
+CREATE TABLE IF NOT EXISTS vision_analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sighting_id TEXT NOT NULL REFERENCES sightings(id),
+    is_bird INTEGER NOT NULL,
+    species TEXT,
+    species_latin TEXT,
+    confidence TEXT,
+    animal_type TEXT,
+    count INTEGER,
+    sex TEXT,
+    age TEXT,
+    behavior TEXT,
+    notable TEXT,
+    raw_response TEXT NOT NULL,
+    model TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vision_sighting ON vision_analyses(sighting_id);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT,
+    question TEXT NOT NULL,
+    context TEXT,
+    response TEXT NOT NULL,
+    model TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -198,6 +230,52 @@ class Database:
         for r in rows:
             lines.append(f"- {r['species']}: {r['cnt']} visits (last: {r['last_seen']})")
         return "\n".join(lines)
+
+    def insert_vision_analysis(
+        self,
+        sighting_id: str,
+        is_bird: bool,
+        species: str | None,
+        species_latin: str | None,
+        confidence: str | None,
+        animal_type: str | None,
+        count: int | None,
+        sex: str | None,
+        age: str | None,
+        behavior: str | None,
+        notable: str | None,
+        raw_response: str,
+        model: str,
+        error: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO vision_analyses
+               (sighting_id, is_bird, species, species_latin, confidence,
+                animal_type, count, sex, age, behavior, notable,
+                raw_response, model, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sighting_id, int(is_bird), species, species_latin, confidence,
+             animal_type, count, sex, age, behavior, notable,
+             raw_response, model, error),
+        )
+        self.conn.commit()
+
+    def log_conversation(
+        self,
+        user_name: str,
+        question: str,
+        context: str,
+        response: str,
+        model: str,
+        error: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO conversations
+               (user_name, question, context, response, model, error)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_name, question, context, response, model, error),
+        )
+        self.conn.commit()
 
     @staticmethod
     def _row_to_sighting(row: sqlite3.Row) -> Sighting:
