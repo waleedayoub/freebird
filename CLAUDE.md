@@ -80,6 +80,11 @@ Optional:
 - `compose.yaml`: named volume `freebird-data` at `/data` for SQLite + media persistence.
 - Build & deploy: `docker compose build && docker compose up -d`
 
+## Plan Files
+
+- **NEVER overwrite the original plan file** (`.claude/plans/vectorized-wandering-snail.md`). It is the master architecture document.
+- Always create **new plan files** in `.claude/plans/` for new tasks (e.g., `fix-vision-accuracy.md`, `vision-backfill.md`).
+
 ## Conventions
 
 - All modules use `from __future__ import annotations` for modern type syntax.

@@ -5,11 +5,10 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from freebird.analysis.birdnet import BirdAnalyzer
 from freebird.analysis.vision import analyze_image
 from freebird.bot.telegram import TelegramBot
 from freebird.config import POLL_INTERVAL_SECONDS
-from freebird.media.downloader import download_image, download_video, extract_audio
+from freebird.media.downloader import download_image, download_video
 from freebird.storage.database import Database
 from freebird.vicohome.api import VicoHomeAPI
 from freebird.vicohome.models import MotionEvent
@@ -26,12 +25,10 @@ class Pipeline:
         api: VicoHomeAPI,
         db: Database,
         bot: TelegramBot,
-        analyzer: BirdAnalyzer,
     ) -> None:
         self.api = api
         self.db = db
         self.bot = bot
-        self.analyzer = analyzer
         self._last_success: float = time.time()
         self._error_alerted: bool = False
 
@@ -101,24 +98,10 @@ class Pipeline:
                 confidence = confidence_map.get(vision.confidence or "", 0.5)
                 is_lifer = self.db.is_lifer(species)
 
-        # Step 4: Download video + BirdNET as supplementary
+        # Step 4: Download video for archive
         video_path = await download_video(event.video_url, event.trace_id)
         if video_path:
-            audio_path = await extract_audio(video_path, event.trace_id)
-            if audio_path:
-                detection = self.analyzer.analyze(audio_path)
-                # Use BirdNET result if vision didn't identify a species
-                if not species and detection:
-                    species = detection.species
-                    species_latin = detection.species_latin
-                    confidence = detection.confidence
-                    is_lifer = self.db.is_lifer(species)
-
-                self.db.update_media_paths(
-                    sighting_id,
-                    video_path=str(video_path),
-                    audio_path=str(audio_path),
-                )
+            self.db.update_media_paths(sighting_id, video_path=str(video_path))
 
         # Step 5: Check VicoHome's own bird ID as fallback
         if not species and event.bird_name:

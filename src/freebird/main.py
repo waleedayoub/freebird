@@ -5,7 +5,6 @@ import logging
 import signal
 from datetime import datetime, time, timedelta, timezone
 
-from freebird.analysis.birdnet import BirdAnalyzer
 from freebird.bot.telegram import TelegramBot
 from freebird.config import ensure_dirs
 from freebird.pipeline import Pipeline
@@ -33,9 +32,8 @@ async def _run() -> None:
     api = VicoHomeAPI(auth)
     db = Database()
     bot = TelegramBot(db)
-    analyzer = BirdAnalyzer()
 
-    pipeline = Pipeline(api=api, db=db, bot=bot, analyzer=analyzer)
+    pipeline = Pipeline(api=api, db=db, bot=bot)
 
     # Set up graceful shutdown
     stop_event = asyncio.Event()

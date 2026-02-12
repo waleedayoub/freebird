@@ -6,17 +6,33 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from freebird.config import ANTHROPIC_API_KEY
+from freebird.config import ANTHROPIC_API_KEY, FEEDER_LOCATION
 from freebird.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-5-20250929"
 
-VISION_PROMPT = """\
-Analyze this bird feeder camera image. Respond with ONLY a JSON object (no markdown):
+VISION_PROMPT_TEMPLATE = """\
+Analyze this bird feeder camera image.
 
-{
+IMPORTANT CAMERA CONTEXT:
+- This is a small backyard platform bird feeder in {location}.
+- The camera has a wide-angle lens mounted directly on the feeder.
+- Birds are typically just inches from the lens, making them appear MUCH larger than actual size.
+- DO NOT use apparent size for identification — a Dark-eyed Junco will fill the entire frame.
+- The turquoise/green object in the image IS the bird feeder platform. It is NOT a picnic table. It is small (roughly 30cm / 12 inches across).
+- Focus on plumage color, patterns, beak shape, and other field marks instead of size.
+- Large species like Wild Turkey, Common Raven, eagles, or hawks are extremely unlikely at this small feeder. Prefer common feeder birds for the region.
+
+CONFIDENCE GUIDELINES:
+- "high": diagnostic field marks clearly visible (e.g., distinct color pattern, beak shape, eye markings)
+- "medium": some field marks visible but partially obscured or at a difficult angle
+- "low": bird is blurry, only back/top of head visible, or mostly obscured. When in doubt, use "low".
+
+Respond with ONLY a JSON object (no markdown):
+
+{{
   "is_bird": true/false,
   "animal_type": "bird" | "squirrel" | "chipmunk" | "cat" | "unknown" | null,
   "species": "Common Name" or null,
@@ -27,10 +43,14 @@ Analyze this bird feeder camera image. Respond with ONLY a JSON object (no markd
   "age": "adult" | "juvenile" | "unknown" | null,
   "behavior": brief description of what the animal is doing,
   "notable": any notable observations (unusual markings, weather, multiple species, etc.) or null
-}
+}}
 
 If no animal is visible (just the feeder/yard), set is_bird to false and animal_type to null.
 If you can see an animal but can't identify the species, still describe what you see."""
+
+
+def _get_vision_prompt() -> str:
+    return VISION_PROMPT_TEMPLATE.format(location=FEEDER_LOCATION)
 
 
 @dataclass
@@ -81,7 +101,7 @@ def analyze_image(image_path: Path, sighting_id: str, db: Database) -> VisionRes
                         },
                         {
                             "type": "text",
-                            "text": VISION_PROMPT,
+                            "text": _get_vision_prompt(),
                         },
                     ],
                 },
