@@ -31,6 +31,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
         self.app.add_handler(CommandHandler("lifers", self._cmd_lifers))
         self.app.add_handler(CommandHandler("species", self._cmd_species))
+        self.app.add_handler(CommandHandler("show", self._cmd_show))
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("help", self._cmd_start))
         self.app.add_handler(CallbackQueryHandler(self._callback_species_detail))
@@ -116,7 +117,8 @@ class TelegramBot:
             "/today -- Today's birds\n"
             "/stats -- Summary statistics\n"
             "/lifers -- All first-ever sightings\n"
-            "/species <name> -- Search by species\n\n"
+            "/species <name> -- Search by species\n"
+            "/show <name> -- Show photo/video of a species\n\n"
             "Or just ask me anything about your birds!"
         )
 
@@ -190,6 +192,50 @@ class TelegramBot:
         if len(results) > 10:
             lines.append(f"  ... and {len(results) - 10} more")
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /show <name>\nExample: /show rock pigeon")
+            return
+        query = " ".join(args)
+        results = self.db.search_species(query)
+        if not results:
+            await update.message.reply_text(f'No sightings matching "{query}"')
+            return
+
+        # Find the most recent sighting with media
+        sighting = results[0]
+        caption = f"{sighting.species or query}"
+        if sighting.confidence:
+            caption += f" ({int(sighting.confidence * 100)}%)"
+        caption += f"\n{sighting.timestamp[:16]}"
+        if sighting.device_name:
+            caption += f" - {sighting.device_name}"
+
+        # Add vision details if available
+        vision = self.db.get_vision_for_sighting(sighting.id)
+        if vision:
+            if vision["behavior"]:
+                caption += f"\n{vision['behavior']}"
+            if vision["notable"]:
+                caption += f"\n{vision['notable']}"
+
+        sent_media = False
+        if sighting.image_path:
+            img = Path(sighting.image_path)
+            if img.exists():
+                await update.message.reply_photo(photo=img.open("rb"), caption=caption)
+                sent_media = True
+
+        if sighting.video_path:
+            vid = Path(sighting.video_path)
+            if vid.exists():
+                await update.message.reply_video(video=vid.open("rb"))
+                sent_media = True
+
+        if not sent_media:
+            await update.message.reply_text(f"No media available for {query}")
 
     async def _callback_species_detail(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

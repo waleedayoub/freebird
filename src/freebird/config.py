@@ -20,8 +20,9 @@ TELEGRAM_CHAT_ID: str = os.environ["TELEGRAM_CHAT_ID"]
 # Claude
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
-# Paths — /data inside Docker, ~/FreeBird locally
-DATA_DIR: Path = Path(os.getenv("FREEBIRD_DATA_DIR", "/data"))
+# Paths — /data inside Docker, ./data locally
+_default_data = "/data" if Path("/data").exists() else str(Path(__file__).resolve().parents[2] / "data")
+DATA_DIR: Path = Path(os.getenv("FREEBIRD_DATA_DIR", _default_data))
 DB_PATH: Path = DATA_DIR / "birds.db"
 MEDIA_DIR: Path = DATA_DIR / "media"
 

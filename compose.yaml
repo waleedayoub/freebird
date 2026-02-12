@@ -4,12 +4,9 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - freebird-data:/data
+      - ./data:/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  freebird-data:

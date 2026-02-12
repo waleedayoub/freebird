@@ -214,6 +214,16 @@ class Database:
         ).fetchall()
         return [self._row_to_sighting(r) for r in rows]
 
+    def get_vision_for_sighting(self, sighting_id: str) -> dict | None:
+        row = self.conn.execute(
+            """SELECT species, animal_type, confidence, count, sex, age,
+                      behavior, notable
+               FROM vision_analyses
+               WHERE sighting_id = ? ORDER BY id DESC LIMIT 1""",
+            (sighting_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get_recent_summary(self, days: int = 7) -> str:
         rows = self.conn.execute(
             """SELECT species, COUNT(*) as cnt,
