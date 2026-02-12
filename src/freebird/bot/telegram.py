@@ -160,6 +160,10 @@ class TelegramBot:
             lines.append("\nTop visitors:")
             for name, count in stats["top_species"]:
                 lines.append(f"  {name}: {count}")
+        if stats["critters"]:
+            lines.append("\nOther critters:")
+            for name, count in stats["critters"]:
+                lines.append(f"  {name}: {count}")
         await update.message.reply_text("\n".join(lines))
 
     async def _cmd_lifers(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,40 +200,58 @@ class TelegramBot:
     async def _cmd_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         args = context.args
         if not args:
-            await update.message.reply_text("Usage: /show <name>\nExample: /show rock pigeon")
+            await update.message.reply_text("Usage: /show <name>\nExample: /show rock pigeon\nAlso works for critters: /show squirrel")
             return
         query = " ".join(args)
         results = self.db.search_species(query)
-        if not results:
-            await update.message.reply_text(f'No sightings matching "{query}"')
-            return
 
-        # Find the most recent sighting with media
-        sighting = results[0]
-        caption = f"{sighting.species or query}"
-        if sighting.confidence:
-            caption += f" ({int(sighting.confidence * 100)}%)"
-        caption += f"\n{sighting.timestamp[:16]}"
-        if sighting.device_name:
-            caption += f" - {sighting.device_name}"
+        if results:
+            sighting = results[0]
+            caption = f"{sighting.species or query}"
+            if sighting.confidence:
+                caption += f" ({int(sighting.confidence * 100)}%)"
+            caption += f"\n{sighting.timestamp[:16]}"
+            if sighting.device_name:
+                caption += f" - {sighting.device_name}"
 
-        # Add vision details if available
-        vision = self.db.get_vision_for_sighting(sighting.id)
-        if vision:
-            if vision["behavior"]:
-                caption += f"\n{vision['behavior']}"
-            if vision["notable"]:
-                caption += f"\n{vision['notable']}"
+            vision = self.db.get_vision_for_sighting(sighting.id)
+            if vision:
+                if vision["behavior"]:
+                    caption += f"\n{vision['behavior']}"
+                if vision["notable"]:
+                    caption += f"\n{vision['notable']}"
+
+            image_path = sighting.image_path
+            video_path = sighting.video_path
+        else:
+            # Fall back to non-bird critter search
+            critters = self.db.search_critters(query)
+            if not critters:
+                await update.message.reply_text(f'No sightings matching "{query}"')
+                return
+
+            critter = critters[0]
+            caption = f"{critter['animal_type'] or query}"
+            caption += f"\n{critter['timestamp'][:16]}"
+            if critter["device_name"]:
+                caption += f" - {critter['device_name']}"
+            if critter["behavior"]:
+                caption += f"\n{critter['behavior']}"
+            if critter["notable"]:
+                caption += f"\n{critter['notable']}"
+
+            image_path = critter["image_path"]
+            video_path = critter["video_path"]
 
         sent_media = False
-        if sighting.image_path:
-            img = Path(sighting.image_path)
+        if image_path:
+            img = Path(image_path)
             if img.exists():
                 await update.message.reply_photo(photo=img.open("rb"), caption=caption)
                 sent_media = True
 
-        if sighting.video_path:
-            vid = Path(sighting.video_path)
+        if video_path:
+            vid = Path(video_path)
             if vid.exists():
                 await update.message.reply_video(video=vid.open("rb"))
                 sent_media = True

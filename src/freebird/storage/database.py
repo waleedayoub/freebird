@@ -190,12 +190,18 @@ class Database:
         lifers = self.conn.execute(
             "SELECT COUNT(*) FROM sightings WHERE is_lifer = 1"
         ).fetchone()[0]
+        critters = self.conn.execute(
+            """SELECT animal_type, COUNT(*) as cnt FROM vision_analyses
+               WHERE is_bird = 0 AND animal_type IS NOT NULL
+               GROUP BY animal_type ORDER BY cnt DESC"""
+        ).fetchall()
         return {
             "total_events": total,
             "identified": with_species,
             "unique_species": unique,
             "lifers": lifers,
             "top_species": [(r["species"], r["cnt"]) for r in top],
+            "critters": [(r["animal_type"], r["cnt"]) for r in critters],
         }
 
     def get_lifers(self) -> list[Sighting]:
@@ -213,6 +219,20 @@ class Database:
             (f"%{query}%", f"%{query}%"),
         ).fetchall()
         return [self._row_to_sighting(r) for r in rows]
+
+    def search_critters(self, query: str) -> list[dict]:
+        """Search vision_analyses for non-bird animals matching query."""
+        rows = self.conn.execute(
+            """SELECT va.animal_type, va.behavior, va.notable, va.sighting_id,
+                      s.image_path, s.video_path, s.timestamp, s.device_name
+               FROM vision_analyses va
+               JOIN sightings s ON s.id = va.sighting_id
+               WHERE va.is_bird = 0
+                 AND va.animal_type LIKE ?
+               ORDER BY s.timestamp DESC LIMIT 20""",
+            (f"%{query}%",),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_vision_for_sighting(self, sighting_id: str) -> dict | None:
         row = self.conn.execute(
