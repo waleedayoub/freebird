@@ -46,10 +46,11 @@ class TelegramBot:
         species: str | None,
         confidence: float | None,
         image_path: Path | None,
+        video_path: Path | None = None,
     ) -> None:
         """Send a notification only when a brand new species is detected."""
         pct = int(confidence * 100) if confidence else 0
-        caption = f"NEW LIFER: {species}! (BirdNET: {pct}%)"
+        caption = f"NEW LIFER: {species}! ({pct}% confidence)"
         try:
             if image_path and image_path.exists():
                 await self.app.bot.send_photo(
@@ -61,6 +62,11 @@ class TelegramBot:
                 await self.app.bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID,
                     text=caption,
+                )
+            if video_path and video_path.exists():
+                await self.app.bot.send_video(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    video=video_path.open("rb"),
                 )
         except Exception:
             logger.exception("Failed to send lifer alert")

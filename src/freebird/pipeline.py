@@ -118,4 +118,4 @@ class Pipeline:
         # Step 7: Notify only on new lifers
         if is_lifer:
             logger.info("NEW LIFER: %s", species)
-            await self.bot.send_lifer_alert(species, confidence, image_path)
+            await self.bot.send_lifer_alert(species, confidence, image_path, video_path)
