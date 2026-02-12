@@ -11,7 +11,6 @@ dist/
 # Data
 data/
 *.db
-media/
 
 # IDE
 .idea/

@@ -33,7 +33,7 @@ POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
 BIRDNET_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIRDNET_CONFIDENCE_THRESHOLD", "0.5"))
 
 # Feeder location (for vision species range filtering)
-FEEDER_LOCATION: str = os.getenv("FEEDER_LOCATION", "Toronto, Ontario, Canada")
+FEEDER_LOCATION: str = os.getenv("FEEDER_LOCATION", "your city")
 
 # API region mapping
 API_BASES: dict[str, str] = {

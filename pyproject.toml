@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Bird feeder monitoring via VicoHome API with BirdNET species identification"
 readme = "README.md"
 authors = [
-    { name = "waleed", email = "waleed.ayoub@gmail.com" }
+    { name = "waleed" }
 ]
 requires-python = ">=3.11,<3.13"
 dependencies = [
