@@ -85,13 +85,10 @@ class Pipeline:
             image_path=str(image_path) if image_path else None,
         )
 
-        # Step 3: Send quick notification with keyshot
-        message_id = await self.bot.send_motion_alert(image_path)
-
-        # Step 4: Download video (background)
+        # Step 3: Download video
         video_path = await download_video(event.video_url, event.trace_id)
 
-        # Step 5: Extract audio and run BirdNET
+        # Step 4: Extract audio and run BirdNET
         species = None
         species_latin = None
         confidence = None
@@ -113,7 +110,7 @@ class Pipeline:
                     audio_path=str(audio_path),
                 )
 
-        # Step 6: Check VicoHome's own bird ID as fallback
+        # Step 5: Check VicoHome's own bird ID as fallback
         if not species and event.bird_name:
             species = event.bird_name
             species_latin = event.bird_latin
@@ -122,12 +119,10 @@ class Pipeline:
             logger.info("Using VicoHome ID: %s (%.0f%%)", species,
                         (confidence or 0) * 100)
 
-        # Step 7: Update DB with species info
+        # Step 6: Update DB with species info
         self.db.update_species(sighting_id, species, species_latin, confidence, is_lifer)
 
-        # Step 8: Edit Telegram message with species
-        if message_id is not None:
-            await self.bot.update_with_species(message_id, species, confidence, is_lifer)
-
+        # Step 7: Notify only on new lifers
         if is_lifer:
             logger.info("NEW LIFER: %s", species)
+            await self.bot.send_lifer_alert(species, confidence, image_path)

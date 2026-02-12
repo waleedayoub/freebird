@@ -38,62 +38,66 @@ class TelegramBot:
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_freeform)
         )
 
-    # -- Notification methods (called by pipeline) --
+    # -- Notification methods (called by pipeline / scheduler) --
 
-    async def send_motion_alert(self, image_path: Path | None) -> int | None:
-        """Send initial motion alert with keyshot. Returns message_id for editing."""
-        try:
-            if image_path and image_path.exists():
-                msg = await self.app.bot.send_photo(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    photo=image_path.open("rb"),
-                    caption="Motion detected at feeder!",
-                )
-            else:
-                msg = await self.app.bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    text="Motion detected at feeder!",
-                )
-            return msg.message_id
-        except Exception:
-            logger.exception("Failed to send motion alert")
-            return None
-
-    async def update_with_species(
+    async def send_lifer_alert(
         self,
-        message_id: int,
         species: str | None,
         confidence: float | None,
-        is_lifer: bool,
+        image_path: Path | None,
     ) -> None:
-        """Edit the initial notification with species identification."""
-        if species and confidence is not None:
-            pct = int(confidence * 100)
-            if is_lifer:
-                caption = f"NEW LIFER: {species}! (BirdNET: {pct}%)"
-            elif confidence >= 0.5:
-                caption = f"{species} spotted! (BirdNET: {pct}%)"
-            else:
-                caption = f"Motion detected -- best guess: {species} ({pct}%)"
-        else:
-            caption = "Motion detected -- species not identified"
-
+        """Send a notification only when a brand new species is detected."""
+        pct = int(confidence * 100) if confidence else 0
+        caption = f"NEW LIFER: {species}! (BirdNET: {pct}%)"
         try:
-            await self.app.bot.edit_message_caption(
-                chat_id=TELEGRAM_CHAT_ID,
-                message_id=message_id,
-                caption=caption,
-            )
-        except Exception:
-            # If the original was a text message (no image), edit text instead
-            try:
-                await self.app.bot.edit_message_text(
+            if image_path and image_path.exists():
+                await self.app.bot.send_photo(
                     chat_id=TELEGRAM_CHAT_ID,
-                    message_id=message_id,
+                    photo=image_path.open("rb"),
+                    caption=caption,
+                )
+            else:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
                     text=caption,
                 )
-            except Exception:
-                logger.exception("Failed to update message %s", message_id)
+        except Exception:
+            logger.exception("Failed to send lifer alert")
+
+    async def send_daily_summary(self) -> None:
+        """Send the 6pm daily summary: visits, unique species, per-species counts."""
+        sightings = self.db.get_today_sightings()
+        total_visits = len(sightings)
+
+        if total_visits == 0:
+            await self.app.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text="Daily summary: No bird sightings today.",
+            )
+            return
+
+        species_counts: dict[str, int] = {}
+        for s in sightings:
+            name = s.species or "Unknown"
+            species_counts[name] = species_counts.get(name, 0) + 1
+
+        lines = [
+            "Daily Summary:",
+            f"  Total visits: {total_visits}",
+            f"  Unique species: {len(species_counts)}",
+            "",
+            "Visits per species:",
+        ]
+        for name, count in sorted(species_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  {name}: {count}")
+
+        try:
+            await self.app.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text="\n".join(lines),
+            )
+        except Exception:
+            logger.exception("Failed to send daily summary")
 
     async def send_error_alert(self, error_msg: str) -> None:
         try:
@@ -217,7 +221,21 @@ class TelegramBot:
         # Only respond to messages from the configured chat
         if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
             return
-        question = update.message.text
+
+        # In group chats, only respond when the bot is mentioned
+        text = update.message.text or ""
+        bot_username = (await self.app.bot.get_me()).username
+        if update.effective_chat.type in ("group", "supergroup"):
+            if f"@{bot_username}" not in text:
+                return
+            # Strip the mention from the question
+            question = text.replace(f"@{bot_username}", "").strip()
+        else:
+            question = text
+
+        if not question:
+            return
+
         await update.message.reply_chat_action("typing")
         answer = await ask_claude(question, self.db)
         await update.message.reply_text(answer)

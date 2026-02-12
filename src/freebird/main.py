@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import sys
+from datetime import datetime, time, timedelta, timezone
 
 from freebird.analysis.birdnet import BirdAnalyzer
 from freebird.bot.telegram import TelegramBot
@@ -12,6 +12,9 @@ from freebird.pipeline import Pipeline
 from freebird.storage.database import Database
 from freebird.vicohome.api import VicoHomeAPI
 from freebird.vicohome.auth import AuthManager
+
+EST = timezone(timedelta(hours=-5))
+DAILY_SUMMARY_TIME = time(18, 0)  # 6:00 PM EST
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,24 +55,50 @@ async def _run() -> None:
 
     logger.info("FreeBird is running! Polling for events + listening for Telegram commands.")
 
-    # Run pipeline and wait for shutdown
+    # Run pipeline + daily summary scheduler
     pipeline_task = asyncio.create_task(pipeline.run())
+    summary_task = asyncio.create_task(_daily_summary_loop(bot, stop_event))
 
     await stop_event.wait()
 
     # Graceful shutdown
     logger.info("Shutting down...")
     pipeline_task.cancel()
-    try:
-        await pipeline_task
-    except asyncio.CancelledError:
-        pass
+    summary_task.cancel()
+    for task in (pipeline_task, summary_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     await bot.app.updater.stop()
     await bot.app.stop()
     await bot.app.shutdown()
     db.close()
     logger.info("FreeBird stopped.")
+
+
+async def _daily_summary_loop(bot: TelegramBot, stop_event: asyncio.Event) -> None:
+    """Send daily summary at 6pm EST. Sleeps until the next occurrence."""
+    while not stop_event.is_set():
+        now = datetime.now(EST)
+        target = datetime.combine(now.date(), DAILY_SUMMARY_TIME, tzinfo=EST)
+        if now >= target:
+            target += timedelta(days=1)
+        delay = (target - now).total_seconds()
+        logger.info("Next daily summary in %.0f minutes", delay / 60)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            return  # stop_event was set, exit
+        except asyncio.TimeoutError:
+            pass  # Timer fired, send summary
+
+        try:
+            await bot.send_daily_summary()
+            logger.info("Daily summary sent")
+        except Exception:
+            logger.exception("Failed to send daily summary")
 
 
 def main() -> None:
