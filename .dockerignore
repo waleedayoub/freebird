@@ -1,0 +1,14 @@
+data/
+.venv/
+.env
+.git/
+.claude/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+docs/
+.DS_Store
+eval/ground_truth.json
+eval/results.jsonl
+eval/details/
