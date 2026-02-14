@@ -1,6 +1,6 @@
 # FreeBird
 
-Bird feeder monitor: polls VicoHome cloud API for motion events, downloads video, identifies species via BirdNET, sends Telegram notifications.
+Bird feeder monitor: polls VicoHome cloud API for motion events, downloads keyshot images, identifies species via AI vision (Gemini/OpenAI/Claude), sends Telegram notifications.
 
 ## Quick Reference
 
@@ -14,8 +14,8 @@ docker compose logs -f                # Tail logs
 ## Architecture
 
 Single Python asyncio process running two concurrent tasks:
-1. **Pipeline** (`pipeline.py`): poll VicoHome API -> dedupe -> download media -> BirdNET -> store -> Telegram notify
-2. **Telegram bot** (`bot/telegram.py`): handles `/today`, `/stats`, `/lifers`, `/species` commands + Claude Q&A
+1. **Pipeline** (`pipeline.py`): poll VicoHome API -> dedupe -> download media -> vision analysis -> store -> Telegram notify
+2. **Telegram bot** (`bot/telegram.py`): handles `/today`, `/stats`, `/lifers`, `/show` commands + Claude Q&A
 
 All components share in-memory references (no IPC). Entry point: `main.py` starts both via `asyncio`.
 
@@ -33,12 +33,21 @@ src/freebird/
   media/
     downloader.py      # Async ffmpeg: M3U8->MP4, image download, audio extraction
   analysis/
-    birdnet.py         # BirdNET wrapper: predict -> to_structured_array() -> best species
+    vision.py          # PydanticAI vision agent, VisionAnalysis schema, prompt loading
+    birdnet.py         # BirdNET audio species identification (legacy, not in pipeline)
   storage/
     database.py        # SQLite WAL, sighting CRUD, lifer detection, query methods
   bot/
     telegram.py        # python-telegram-bot handlers + notification methods
     claude.py          # Anthropic API for freeform Q&A
+  eval_label.py        # Web UI for labeling keyshot images (FastAPI)
+  eval_run.py          # Eval runner: pydantic-evals harness with IsBirdCorrect + SpeciesMatch
+  vision_backfill.py   # Batch re-analysis of historical images
+eval/
+  prompts/             # Vision prompt templates (default.txt, default_v2.txt)
+  ground_truth.json    # Human-labeled eval dataset
+  results.jsonl        # Eval run history (generated, not committed)
+  details/             # Per-case eval details (generated, not committed)
 ```
 
 ## Key Constraints
@@ -54,31 +63,60 @@ src/freebird/
 - Event list endpoint uses `"code"` field for status; login uses `"result"`. Both must be checked.
 - Auth error codes -1024 to -1027 trigger one retry with fresh token (see `auth.py:AUTH_ERROR_CODES`).
 
-## BirdNET API
+## Vision
+
+- Species ID uses PydanticAI with structured output (`VisionAnalysis` Pydantic model).
+- Default model: `google-gla:gemini-3-flash-preview` (87% species accuracy on 115 labeled images).
+- Prompts are text files in `eval/prompts/`. Production uses `default_v2.txt`.
+- `load_prompt(name)` reads `eval/prompts/{name}.txt` and interpolates `{location}` from `FEEDER_LOCATION`.
+- Supported model prefixes: `google-gla:` (Gemini), `openai:` (OpenAI), `anthropic:` (Claude).
+
+## Eval Framework
+
+- `eval_label.py`: FastAPI web UI at `localhost:8000` for labeling keyshots. Saves to `eval/ground_truth.json`.
+- `eval_run.py`: pydantic-evals harness. Evaluators: `IsBirdCorrect` (bird vs non-bird) and `SpeciesMatch` (species/animal_type).
+- `SpeciesMatch` logic: empty frames check `animal_type is None`, birds use case-insensitive species match, non-birds use case-insensitive containment (e.g., "squirrel" matches `animal_type: "squirrel"` or `species: "Eastern Gray Squirrel"`).
+- Unlabeled birds (`is_bird: true`, `label: ""`) are skipped during dataset construction.
+- Results append to `eval/results.jsonl`; per-case details write to `eval/details/`.
+
+### Model Accuracy (115 labeled images)
+
+| Model | Prompt | Bird/Non-bird | Species |
+|-------|--------|:---:|:---:|
+| Gemini 2.5 Flash | default_v2 | 91.3% | 75.7% |
+| Gemini 3 Flash Preview | default_v2 | 93.9% | **87.0%** |
+| GPT-5 Mini | default_v2 | **97.4%** | 77.4% |
+
+## BirdNET (Legacy)
+
+BirdNET audio analysis is no longer in the pipeline (replaced by vision). The module remains for reference.
 
 - `birdnet.load("acoustic", "2.4", "tf")` — loads the TF model (downloads ~77MB on first run).
 - `model.predict(path)` returns `AcousticFilePredictionResult`.
 - Use `.to_structured_array()` to iterate results. **`.as_dict_list()` does not exist.**
 - `species_name` field format: `"Scientific name_Common Name"` — split on `_` with maxsplit=1.
-- Audio must be WAV. Pipeline extracts at 48kHz mono via ffmpeg.
 
 ## Environment Variables
 
 Required in `.env` (see `.env.example`):
 - `VICOHOME_EMAIL`, `VICOHOME_PASSWORD` — VicoHome account
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — Telegram bot
+- `GOOGLE_API_KEY` — Google AI API key (for Gemini vision)
 - `ANTHROPIC_API_KEY` — optional, for Claude Q&A
 
 Optional:
+- `VISION_MODEL` — defaults to `google-gla:gemini-3-flash-preview`
+- `VISION_PROMPT` — defaults to `default_v2`
+- `FEEDER_LOCATION` — e.g. `Toronto, Ontario, Canada` (used in vision prompt)
 - `FREEBIRD_DATA_DIR` — defaults to `/data` (Docker) or override for local dev
 - `POLL_INTERVAL_SECONDS` — defaults to `15`
-- `BIRDNET_CONFIDENCE_THRESHOLD` — defaults to `0.5`
 
 ## Docker
 
-- `Dockerfile`: python:3.12-slim + ffmpeg + uv. Deps cached in separate layer.
-- `compose.yaml`: named volume `freebird-data` at `/data` for SQLite + media persistence.
+- `Dockerfile`: python:3.12-slim + ffmpeg + uv. Deps cached in separate layer. Copies `eval/prompts/` for prompt loading.
+- `compose.yaml`: bind mount `./data` at `/data` for SQLite + media persistence.
 - Build & deploy: `docker compose build && docker compose up -d`
+- Remote deploy: `docker context create macbook --docker "host=ssh://user@host"` then `docker compose --context macbook up -d --build`
 
 ## Plan Files
 

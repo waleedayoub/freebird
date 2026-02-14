@@ -41,15 +41,26 @@ Single Python asyncio process running two concurrent tasks:
 
 ## Vision
 
-Species identification uses [PydanticAI](https://ai.pydantic.dev/) with structured output. The vision model is configurable via `VISION_MODEL`:
+Species identification uses [PydanticAI](https://ai.pydantic.dev/) with structured output. The vision model and prompt are configurable via env vars:
 
 ```bash
-VISION_MODEL=google-gla:gemini-2.5-flash          # Gemini (default)
-VISION_MODEL=anthropic:claude-sonnet-4-5-20250929  # Claude
-VISION_MODEL=openai:gpt-4o                         # OpenAI
+VISION_MODEL=google-gla:gemini-3-flash-preview     # Gemini (default)
+VISION_MODEL=anthropic:claude-sonnet-4-5-20250929   # Claude
+VISION_MODEL=openai:gpt-4o                          # OpenAI
+
+VISION_PROMPT=default_v2                             # Prompt template (default)
 ```
 
-Prompts live as text files in `eval/prompts/`. Production uses `default.txt`.
+Prompts live as text files in `eval/prompts/`. Production uses `default_v2.txt`.
+
+### Model Accuracy (115 labeled images)
+
+| Model | Prompt | Bird/Non-bird | Species | Notes |
+|-------|--------|:---:|:---:|-------|
+| Gemini 2.5 Flash | default | 93.3% | 22.5% | Old evaluator inflated failures |
+| Gemini 2.5 Flash | default_v2 | 91.3% | 75.7% | Evaluator fix + prompt upgrade |
+| Gemini 3 Flash Preview | default_v2 | 93.9% | **87.0%** | **Production pick** |
+| GPT-5 Mini | default_v2 | **97.4%** | 77.4% | Best bird detection, weaker species ID |
 
 ## Eval Framework
 
