@@ -32,6 +32,11 @@ POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
 # BirdNET
 BIRDNET_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIRDNET_CONFIDENCE_THRESHOLD", "0.5"))
 
+# Vision
+VISION_MODEL: str = os.getenv("VISION_MODEL", "google-gla:gemini-3-flash-preview")
+VISION_PROMPT: str = os.getenv("VISION_PROMPT", "default_v2")
+GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+
 # Feeder location (for vision species range filtering)
 FEEDER_LOCATION: str = os.getenv("FEEDER_LOCATION", "your city")
 

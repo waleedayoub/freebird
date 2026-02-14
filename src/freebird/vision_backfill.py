@@ -72,8 +72,8 @@ def run() -> None:
         else:
             logger.info("  -> No animal detected")
 
-        # Small delay to avoid rate limiting
-        time.sleep(0.5)
+        # Delay for Gemini free tier (10 RPM)
+        time.sleep(7)
 
     db.close()
     logger.info(

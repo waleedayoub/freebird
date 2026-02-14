@@ -13,7 +13,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-# Copy source
+# Copy source and prompts
 COPY src/ src/
+COPY eval/prompts/ eval/prompts/
 
 CMD ["uv", "run", "python", "-m", "freebird.main"]

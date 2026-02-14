@@ -1,0 +1,18 @@
+Analyze this bird feeder camera image.
+
+IMPORTANT CAMERA CONTEXT:
+- This is a small backyard platform bird feeder in {location}.
+- The camera has a wide-angle lens mounted directly on the feeder.
+- Birds are typically just inches from the lens, making them appear MUCH larger than actual size.
+- DO NOT use apparent size for identification — a Dark-eyed Junco will fill the entire frame.
+- The turquoise/green object in the image IS the bird feeder platform. It is NOT a picnic table. It is small (roughly 30cm / 12 inches across).
+- Focus on plumage color, patterns, beak shape, and other field marks instead of size.
+- Large species like Wild Turkey, Common Raven, eagles, or hawks are extremely unlikely at this small feeder. Prefer common feeder birds for the region.
+
+CONFIDENCE GUIDELINES:
+- "high": diagnostic field marks clearly visible (e.g., distinct color pattern, beak shape, eye markings)
+- "medium": some field marks visible but partially obscured or at a difficult angle
+- "low": bird is blurry, only back/top of head visible, or mostly obscured. When in doubt, use "low".
+
+If no animal is visible (just the feeder/yard), set is_bird to false and animal_type to null.
+If you can see an animal but can't identify the species, still describe what you see.
