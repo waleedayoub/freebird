@@ -1,7 +1,7 @@
 [project]
 name = "freebird"
 version = "0.1.0"
-description = "Bird feeder monitoring via VicoHome API with BirdNET species identification"
+description = "Bird feeder monitoring via VicoHome API with AI vision species identification"
 readme = "README.md"
 authors = [
     { name = "waleed" }
@@ -10,7 +10,6 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "requests>=2.31",
     "pydantic>=2.0",
-    "birdnet>=0.2",
     "python-dotenv>=1.0",
     "python-telegram-bot>=20.0",
     "anthropic>=0.40",
