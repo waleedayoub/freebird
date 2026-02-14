@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("freebird.vision_backfill")
 
 
-def run() -> None:
+async def run() -> None:
     rerun = "--rerun" in sys.argv
     ensure_dirs()
     db = Database()
@@ -53,7 +53,7 @@ def run() -> None:
 
         logger.info("[%d/%d] Analyzing %s", i, total, image_path.name)
 
-        vision = asyncio.run(analyze_image(image_path, sighting_id, db))
+        vision = await analyze_image(image_path, sighting_id, db)
 
         if vision and vision.is_bird and vision.species:
             analyzed += 1
@@ -74,7 +74,7 @@ def run() -> None:
             logger.info("  -> No animal detected")
 
         # Delay for Gemini free tier (10 RPM)
-        time.sleep(7)
+        await asyncio.sleep(7)
 
     db.close()
     logger.info(
@@ -84,4 +84,4 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(run())
