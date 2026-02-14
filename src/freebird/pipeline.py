@@ -90,7 +90,7 @@ class Pipeline:
         is_lifer = False
 
         if image_path:
-            vision = analyze_image(image_path, sighting_id, self.db)
+            vision = await analyze_image(image_path, sighting_id, self.db)
             if vision and vision.is_bird and vision.species:
                 species = vision.species
                 species_latin = vision.species_latin

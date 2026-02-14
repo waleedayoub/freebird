@@ -74,7 +74,7 @@ def _get_agent():
     return _agent
 
 
-def analyze_image(image_path: Path, sighting_id: str, db: Database) -> VisionResult | None:
+async def analyze_image(image_path: Path, sighting_id: str, db: Database) -> VisionResult | None:
     if not image_path.exists():
         logger.warning("Image not found: %s", image_path)
         return None
@@ -83,7 +83,7 @@ def analyze_image(image_path: Path, sighting_id: str, db: Database) -> VisionRes
         from pydantic_ai import BinaryContent
 
         agent = _get_agent()
-        ai_result = agent.run_sync([
+        ai_result = await agent.run([
             "Analyze this bird feeder camera image.",
             BinaryContent(data=image_path.read_bytes(), media_type="image/jpeg"),
         ])

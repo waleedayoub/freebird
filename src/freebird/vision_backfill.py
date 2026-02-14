@@ -1,6 +1,7 @@
 """Run Claude Vision analysis on all existing sightings that have keyshot images."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import time
@@ -52,7 +53,7 @@ def run() -> None:
 
         logger.info("[%d/%d] Analyzing %s", i, total, image_path.name)
 
-        vision = analyze_image(image_path, sighting_id, db)
+        vision = asyncio.run(analyze_image(image_path, sighting_id, db))
 
         if vision and vision.is_bird and vision.species:
             analyzed += 1
