@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from freebird.config import format_local_time
+from freebird.config import format_local_time, local_today
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -34,6 +34,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("lifers", self._cmd_lifers))
         self.app.add_handler(CommandHandler("species", self._cmd_species))
         self.app.add_handler(CommandHandler("show", self._cmd_show))
+        self.app.add_handler(CommandHandler("latest", self._cmd_latest))
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("help", self._cmd_start))
         self.app.add_handler(CallbackQueryHandler(self._callback_species_detail))
@@ -126,7 +127,8 @@ class TelegramBot:
             "/stats -- Summary statistics\n"
             "/lifers -- All first-ever sightings\n"
             "/species <name> -- Search by species\n"
-            "/show <name> -- Show photo/video of a species\n\n"
+            "/show <name> -- Show photo/video of a species\n"
+            "/latest -- Latest video from today\n\n"
             "Or just ask me anything about your birds!"
         )
 
@@ -266,6 +268,38 @@ class TelegramBot:
 
         if not sent_media:
             await update.message.reply_text(f"No media available for {query}")
+
+    async def _cmd_latest(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        today = local_today()
+        row = self.db.conn.execute(
+            """SELECT s.*, v.species as v_species, v.animal_type, v.behavior, v.notable
+               FROM sightings s
+               LEFT JOIN vision_analyses v ON s.id = v.sighting_id
+               WHERE s.timestamp >= ? AND s.video_path IS NOT NULL
+               ORDER BY s.timestamp DESC LIMIT 1""",
+            (today,),
+        ).fetchone()
+
+        if not row or not row["video_path"]:
+            await update.message.reply_text("No videos from today yet!")
+            return
+
+        vid = Path(row["video_path"])
+        if not vid.exists():
+            await update.message.reply_text("Video file not found on disk.")
+            return
+
+        species = row["species"] or row["v_species"] or row["animal_type"] or "Unknown"
+        ts = format_local_time(row["timestamp"])
+        caption = f"{species} at {ts}"
+        if row["behavior"]:
+            caption += f"\n{row['behavior']}"
+
+        if row["image_path"] and Path(row["image_path"]).exists():
+            await update.message.reply_photo(
+                photo=Path(row["image_path"]).open("rb"), caption=caption
+            )
+        await update.message.reply_video(video=vid.open("rb"))
 
     async def _callback_species_detail(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
