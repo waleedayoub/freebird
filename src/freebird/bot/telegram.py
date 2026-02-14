@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from freebird.config import format_local_time
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -179,7 +181,7 @@ class TelegramBot:
             return
         lines = ["First-ever sightings:"]
         for s in lifers:
-            ts = s.timestamp[:10]  # date portion
+            ts = format_local_time(s.timestamp, "%b %d")
             conf = f" ({int(s.confidence * 100)}%)" if s.confidence else ""
             lines.append(f"  {s.species}{conf} -- {ts}")
         await update.message.reply_text("\n".join(lines))
@@ -196,7 +198,7 @@ class TelegramBot:
             return
         lines = [f'Sightings matching "{query}":']
         for s in results[:10]:
-            ts = s.timestamp[:16]
+            ts = format_local_time(s.timestamp, "%b %d %I:%M %p")
             conf = f" ({int(s.confidence * 100)}%)" if s.confidence else ""
             lines.append(f"  {s.species}{conf} -- {ts}")
         if len(results) > 10:
@@ -216,7 +218,7 @@ class TelegramBot:
             caption = f"{sighting.species or query}"
             if sighting.confidence:
                 caption += f" ({int(sighting.confidence * 100)}%)"
-            caption += f"\n{sighting.timestamp[:16]}"
+            caption += f"\n{format_local_time(sighting.timestamp, '%b %d %I:%M %p')}"
             if sighting.device_name:
                 caption += f" - {sighting.device_name}"
 
@@ -238,7 +240,7 @@ class TelegramBot:
 
             critter = critters[0]
             caption = f"{critter['animal_type'] or query}"
-            caption += f"\n{critter['timestamp'][:16]}"
+            caption += f"\n{format_local_time(critter['timestamp'], '%b %d %I:%M %p')}"
             if critter["device_name"]:
                 caption += f" - {critter['device_name']}"
             if critter["behavior"]:
@@ -282,7 +284,7 @@ class TelegramBot:
         lines = [
             f"{latest.species}",
             f"  Latin: {latest.species_latin or 'N/A'}",
-            f"  Last seen: {latest.timestamp[:16]}",
+            f"  Last seen: {format_local_time(latest.timestamp, '%b %d %I:%M %p')}",
             f"  Total sightings: {len(results)}",
         ]
         if latest.confidence:

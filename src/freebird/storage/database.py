@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from freebird.config import DB_PATH
+from freebird.config import DB_PATH, local_today
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ class Database:
         self.conn.commit()
 
     def get_today_sightings(self) -> list[Sighting]:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = local_today()
         rows = self.conn.execute(
             """SELECT * FROM sightings
                WHERE timestamp >= ? AND species IS NOT NULL

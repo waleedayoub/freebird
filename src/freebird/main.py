@@ -6,14 +6,13 @@ import signal
 from datetime import datetime, time, timedelta, timezone
 
 from freebird.bot.telegram import TelegramBot
-from freebird.config import ensure_dirs
+from freebird.config import TIMEZONE, ensure_dirs
 from freebird.pipeline import Pipeline
 from freebird.storage.database import Database
 from freebird.vicohome.api import VicoHomeAPI
 from freebird.vicohome.auth import AuthManager
 
-EST = timezone(timedelta(hours=-5))
-DAILY_SUMMARY_TIME = time(18, 0)  # 6:00 PM EST
+DAILY_SUMMARY_TIME = time(18, 0)  # 6:00 PM local
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,8 +78,8 @@ async def _run() -> None:
 async def _daily_summary_loop(bot: TelegramBot, stop_event: asyncio.Event) -> None:
     """Send daily summary at 6pm EST. Sleeps until the next occurrence."""
     while not stop_event.is_set():
-        now = datetime.now(EST)
-        target = datetime.combine(now.date(), DAILY_SUMMARY_TIME, tzinfo=EST)
+        now = datetime.now(TIMEZONE)
+        target = datetime.combine(now.date(), DAILY_SUMMARY_TIME, tzinfo=TIMEZONE)
         if now >= target:
             target += timedelta(days=1)
         delay = (target - now).total_seconds()

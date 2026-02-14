@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -37,8 +39,20 @@ VISION_MODEL: str = os.getenv("VISION_MODEL", "google-gla:gemini-3-flash-preview
 VISION_PROMPT: str = os.getenv("VISION_PROMPT", "default_v2")
 GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 
-# Feeder location (for vision species range filtering)
+# Feeder location and timezone
 FEEDER_LOCATION: str = os.getenv("FEEDER_LOCATION", "your city")
+TIMEZONE: ZoneInfo = ZoneInfo(os.getenv("TIMEZONE", "America/Toronto"))
+
+
+def format_local_time(utc_str: str, fmt: str = "%I:%M %p") -> str:
+    """Convert a UTC ISO timestamp string to local time display."""
+    dt = datetime.fromisoformat(utc_str).astimezone(TIMEZONE)
+    return dt.strftime(fmt).lstrip("0")
+
+
+def local_today() -> str:
+    """Return today's date in local timezone as YYYY-MM-DD."""
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d")
 
 # API region mapping
 API_BASES: dict[str, str] = {
