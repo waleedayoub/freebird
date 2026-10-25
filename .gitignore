@@ -24,3 +24,6 @@ data/
 
 docs/
 .claude/
+# Eval working data (regenerable)
+eval/work/
+eval/runs/
