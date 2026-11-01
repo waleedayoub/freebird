@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from freebird.config import DB_PATH, local_today
+from freebird.species import is_real_species, norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,24 @@ CREATE TABLE IF NOT EXISTS vision_analyses (
 
 CREATE INDEX IF NOT EXISTS idx_vision_sighting ON vision_analyses(sighting_id);
 
+CREATE TABLE IF NOT EXISTS human_labels (
+    sighting_id TEXT PRIMARY KEY REFERENCES sightings(id),
+    label TEXT NOT NULL,
+    source TEXT DEFAULT 'telegram',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS pending_reviews (
+    sighting_id TEXT PRIMARY KEY REFERENCES sightings(id),
+    options TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_name TEXT,
@@ -87,6 +107,13 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(vision_analyses)")}
+        if "role" not in cols:
+            self.conn.execute("ALTER TABLE vision_analyses ADD COLUMN role TEXT DEFAULT 'primary'")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -97,13 +124,65 @@ class Database:
         ).fetchone()
         return row is not None
 
-    def is_lifer(self, species: str) -> bool:
-        if not species:
+    def is_lifer(self, species: str, exclude_id: str | None = None) -> bool:
+        """True if no earlier sighting has this species, comparing canonical names so
+        "House sparrow" and "House Sparrow" are the same bird."""
+        if not is_real_species(species):
             return False
+        key = norm_species(species)
+        rows = self.conn.execute(
+            "SELECT DISTINCT species FROM sightings WHERE species IS NOT NULL"
+            + (" AND id != ?" if exclude_id else ""),
+            (exclude_id,) if exclude_id else (),
+        ).fetchall()
+        return all(norm_species(r["species"]) != key for r in rows)
+
+    def set_species(self, sighting_id: str, species: str | None) -> bool:
+        """Overwrite a sighting's species (human correction) and recompute its lifer flag."""
+        lifer = bool(species) and self.is_lifer(species, exclude_id=sighting_id)
+        self.conn.execute(
+            "UPDATE sightings SET species = ?, is_lifer = ?, confidence = 1.0 WHERE id = ?",
+            (species, int(lifer), sighting_id),
+        )
+        self.conn.commit()
+        return lifer
+
+    # -- small key/value state --
+
+    def kv_get(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def kv_set(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        self.conn.commit()
+
+    # -- human review --
+
+    def add_pending_review(self, sighting_id: str, options: list[str]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pending_reviews (sighting_id, options) VALUES (?, ?)",
+            (sighting_id, json.dumps(options)))
+        self.conn.commit()
+
+    def get_pending_review(self, sighting_id: str) -> list[str] | None:
         row = self.conn.execute(
-            "SELECT 1 FROM sightings WHERE species = ? LIMIT 1", (species,)
-        ).fetchone()
-        return row is None
+            "SELECT options FROM pending_reviews WHERE sighting_id = ?", (sighting_id,)).fetchone()
+        return json.loads(row["options"]) if row else None
+
+    def resolve_review(self, sighting_id: str, label: str) -> None:
+        """Record the human's answer (also usable later as a gold label for evals)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO human_labels (sighting_id, label) VALUES (?, ?)",
+            (sighting_id, label))
+        self.conn.execute("DELETE FROM pending_reviews WHERE sighting_id = ?", (sighting_id,))
+        self.conn.commit()
+
+    def get_sighting(self, sighting_id: str) -> Sighting | None:
+        row = self.conn.execute("SELECT * FROM sightings WHERE id = ?", (sighting_id,)).fetchone()
+        return self._row_to_sighting(row) if row else None
 
     def insert_sighting(
         self,
@@ -174,6 +253,22 @@ class Database:
         ).fetchall()
         return [self._row_to_sighting(r) for r in rows]
 
+    def daily_bird_counts(self, days: int, today: str | None = None) -> dict[str, int]:
+        """Bird visits per local calendar day for the last `days` days up to `today` (default now)."""
+        from datetime import timedelta
+        from freebird.config import TIMEZONE
+        end = (datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=TIMEZONE) + timedelta(days=1)
+               if today else datetime.now(TIMEZONE))
+        since = (end - timedelta(days=days + 1)).astimezone(timezone.utc).isoformat()
+        counts: dict[str, int] = {}
+        for r in self.conn.execute(
+            "SELECT timestamp FROM sightings WHERE species IS NOT NULL AND timestamp >= ?"
+            " AND timestamp < ?", (since, end.astimezone(timezone.utc).isoformat())
+        ):
+            d = datetime.fromisoformat(r["timestamp"]).astimezone(TIMEZONE).strftime("%Y-%m-%d")
+            counts[d] = counts.get(d, 0) + 1
+        return counts
+
     def get_stats(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         with_species = self.conn.execute(
@@ -239,7 +334,8 @@ class Database:
             """SELECT species, animal_type, confidence, count, sex, age,
                       behavior, notable
                FROM vision_analyses
-               WHERE sighting_id = ? ORDER BY id DESC LIMIT 1""",
+               WHERE sighting_id = ? AND COALESCE(role, 'primary') = 'primary'
+               ORDER BY id DESC LIMIT 1""",
             (sighting_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -277,16 +373,17 @@ class Database:
         raw_response: str,
         model: str,
         error: str | None = None,
+        role: str = "primary",
     ) -> None:
         self.conn.execute(
             """INSERT INTO vision_analyses
                (sighting_id, is_bird, species, species_latin, confidence,
                 animal_type, count, sex, age, behavior, notable,
-                raw_response, model, error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                raw_response, model, error, role)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (sighting_id, int(is_bird), species, species_latin, confidence,
              animal_type, count, sex, age, behavior, notable,
-             raw_response, model, error),
+             raw_response, model, error, role),
         )
         self.conn.commit()
 

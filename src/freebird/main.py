@@ -7,18 +7,22 @@ from datetime import datetime, time, timedelta, timezone
 
 from freebird.bot.telegram import TelegramBot
 from freebird.config import TIMEZONE, ensure_dirs
+from freebird.feeder import check_feeder
 from freebird.pipeline import Pipeline
 from freebird.storage.database import Database
 from freebird.vicohome.api import VicoHomeAPI
 from freebird.vicohome.auth import AuthManager
 
 DAILY_SUMMARY_TIME = time(18, 0)  # 6:00 PM local
+FEEDER_CHECK_TIME = time(10, 0)   # 10:00 AM local
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# httpx logs full request URLs at INFO, which include the Telegram bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("freebird")
 
 
@@ -55,6 +59,7 @@ async def _run() -> None:
     # Run pipeline + daily summary scheduler
     pipeline_task = asyncio.create_task(pipeline.run())
     summary_task = asyncio.create_task(_daily_summary_loop(bot, stop_event))
+    feeder_task = asyncio.create_task(_feeder_check_loop(bot, db, stop_event))
 
     await stop_event.wait()
 
@@ -62,7 +67,8 @@ async def _run() -> None:
     logger.info("Shutting down...")
     pipeline_task.cancel()
     summary_task.cancel()
-    for task in (pipeline_task, summary_task):
+    feeder_task.cancel()
+    for task in (pipeline_task, summary_task, feeder_task):
         try:
             await task
         except asyncio.CancelledError:
@@ -96,6 +102,24 @@ async def _daily_summary_loop(bot: TelegramBot, stop_event: asyncio.Event) -> No
             logger.info("Daily summary sent")
         except Exception:
             logger.exception("Failed to send daily summary")
+
+
+async def _feeder_check_loop(bot: TelegramBot, db: Database, stop_event: asyncio.Event) -> None:
+    """Once a day, nudge if bird activity has collapsed (feeder probably empty)."""
+    while not stop_event.is_set():
+        now = datetime.now(TIMEZONE)
+        target = datetime.combine(now.date(), FEEDER_CHECK_TIME, tzinfo=TIMEZONE)
+        if now >= target:
+            target += timedelta(days=1)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=(target - now).total_seconds())
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await check_feeder(bot, db)
+        except Exception:
+            logger.exception("Feeder check failed")
 
 
 def main() -> None:

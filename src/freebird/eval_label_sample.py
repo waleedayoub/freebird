@@ -3,7 +3,7 @@
 Run: uv run python -m freebird.eval_label_sample      then open http://localhost:8001
 Saves to eval/sets/sample_gold.json in the same {id: {label, is_bird}} format as ground_truth.json.
 Candidates are the species the models proposed (shown alphabetically, no model names, to avoid
-anchoring). Keys: 1-9 pick a candidate, E = empty, S = squirrel, X = skip, U = unsure (excluded).
+anchoring). Keys: 1-9 pick a candidate, E = empty, S = squirrel, U = unsure (excluded), Z = undo last label.
 """
 from __future__ import annotations
 
@@ -64,6 +64,15 @@ async def save(sid: str = Form(...), label: str = Form(...), kind: str = Form(..
     return RedirectResponse("/", status_code=303)
 
 
+@app.post("/undo")
+async def undo():
+    g = _gold()
+    if g:
+        g.popitem()  # json preserves insertion order, so this is the most recent label
+        GOLD.write_text(json.dumps(g, indent=2) + "\n")
+    return RedirectResponse("/", status_code=303)
+
+
 @app.get("/")
 async def index():
     g = _gold()
@@ -94,11 +103,13 @@ button:hover{{background:#5b8def}}.m{{color:#888}}input[type=text]{{padding:9px;
 </span></form>
 <form method=post action=/save id=f2><input type=hidden name=sid value="{q['id']}"><input type=hidden name=kind value=bird>
 <input type=text name=label placeholder="or type another species, Enter" autocomplete=off></form>
+<form method=post action=/undo id=fu style="margin-top:14px"><button class=m style="background:#222">Z. Undo last label</button></form>
 <script>function k(v){{document.getElementById('kind').value=v}}
 document.addEventListener('keydown',e=>{{if(e.target.tagName=='INPUT')return;const b=[...document.querySelectorAll('#f button')];
 const n=parseInt(e.key);let t=null;if(n>=1&&n<=9)t=b.find(x=>x.textContent.startsWith(n+'.'));
 else if(e.key=='e')t=b.find(x=>x.textContent.startsWith('E.'));else if(e.key=='s')t=b.find(x=>x.textContent.startsWith('S.'));
-else if(e.key=='u')t=b.find(x=>x.textContent.startsWith('U.'));if(t)t.click()}});</script>""")
+else if(e.key=='u')t=b.find(x=>x.textContent.startsWith('U.'));
+else if(e.key=='z'){{document.getElementById('fu').submit();return}}if(t)t.click()}});</script>""")
 
 
 if __name__ == "__main__":

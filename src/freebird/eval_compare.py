@@ -19,9 +19,9 @@ import sqlite3
 import time
 from pathlib import Path
 
-from pydantic_ai import Agent, BinaryContent, NativeOutput, PromptedOutput
+from pydantic_ai import Agent, BinaryContent
 
-from freebird.analysis.vision import VisionAnalysis, load_prompt
+from freebird.analysis.vision import VisionAnalysis, load_prompt, output_spec
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger("freebird.eval_compare")
@@ -50,14 +50,6 @@ def load_set(name: str, db_path: Path) -> list[tuple[str, Path]]:
             if p.exists():
                 out.append((sid, p))
     return out
-
-
-def output_spec(model: str):
-    """Claude 5.x rejects forced tool_choice, so use prompted JSON output there; others
-    keep PydanticAI's default tool-call mode (what production uses)."""
-    if model.startswith("anthropic:claude-") and not model.startswith("anthropic:claude-haiku-5-5"):
-        return PromptedOutput(VisionAnalysis)
-    return VisionAnalysis
 
 
 async def run_model(model: str, items: list[tuple[str, Path]], prompt: str, out_path: Path,

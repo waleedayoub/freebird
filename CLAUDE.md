@@ -15,7 +15,7 @@ docker compose logs -f                # Tail logs
 
 Single Python asyncio process running two concurrent tasks:
 1. **Pipeline** (`pipeline.py`): poll VicoHome API -> dedupe -> download media -> vision analysis -> store -> Telegram notify
-2. **Telegram bot** (`bot/telegram.py`): handles `/today`, `/stats`, `/lifers`, `/show` commands + Claude Q&A
+2. **Telegram bot** (`bot/telegram.py`): handles `/today`, `/stats`, `/lifers`, `/show`, `/latest` commands + Claude Q&A
 
 All components share in-memory references (no IPC). Entry point: `main.py` starts both via `asyncio`.
 
@@ -52,9 +52,11 @@ eval/
 
 ## Key Constraints
 
-- **Python <=3.12** required. BirdNET depends on TensorFlow which has no 3.13+ wheels. `.python-version` must stay at `3.12`.
-- **ffmpeg** must be available on PATH (installed in Docker image, `brew install ffmpeg` locally).
+- **Python 3.12** required. `.python-version` must stay at `3.12`.
+- **ffmpeg** must be available on PATH (`brew install ffmpeg` locally).
 - **No tests yet.** When adding tests, use `pytest` and mock the VicoHome API / Telegram bot (they require real credentials).
+- **Single instance only.** Only one FreeBird process can run at a time — multiple instances fight over the Telegram bot `getUpdates` and VicoHome auth token.
+- **VicoHome single-session auth.** Each login invalidates the previous token. Use a **separate VicoHome account** for FreeBird to avoid getting logged out of the mobile app.
 
 ## VicoHome API Gotchas
 
@@ -70,6 +72,13 @@ eval/
 - Prompts are text files in `eval/prompts/`. Production uses `default_v2.txt`.
 - `load_prompt(name)` reads `eval/prompts/{name}.txt` and interpolates `{location}` from `FEEDER_LOCATION`.
 - Supported model prefixes: `google-gla:` (Gemini), `openai:` (OpenAI), `anthropic:` (Claude).
+- Claude 5.x models reject forced tool calls, so `vision.output_spec()` uses `PromptedOutput` for them. Use it everywhere (production and evals).
+- **Second opinion + failover:** set `VISION_REVIEW_MODEL` to run a second model only on lifer candidates and low-confidence birds. If the two disagree, the lifer alert becomes a Telegram message with buttons (`rv:<sighting>:<n>`), and the tap is stored in `human_labels` (future gold labels). The same model is the failover when the primary errors.
+- Species names are normalized by `species.py` (aliases, case, parentheticals) for lifer checks and scoring. It does not restrict what a model may say; fix naming in the prompt.
+- Prompts: `default_v3.txt` adds naming rules and look-alike guidance; `default_v4.txt` requires a best guess instead of "Unidentified bird".
+- `feeder.py` sends a daily 10:00 nudge when bird visits fall to under 25% of the prior two weeks. `/refilled` silences it for 4 days. State lives in the `kv` table.
+- Polling catches up to 48 h after an outage (`kv.last_poll_ok`).
+- Q&A (`bot/claude.py`) uses `QA_MODEL` (default `claude-sonnet-5-5`) with DB tools (search_sightings, species_counts, daily_activity, get_sighting, send_media).
 
 ## Eval Framework
 
@@ -78,6 +87,7 @@ eval/
 - `SpeciesMatch` logic: empty frames check `animal_type is None`, birds use case-insensitive species match, non-birds use case-insensitive containment (e.g., "squirrel" matches `animal_type: "squirrel"` or `species: "Eastern Gray Squirrel"`).
 - Unlabeled birds (`is_bird: true`, `label: ""`) are skipped during dataset construction.
 - Results append to `eval/results.jsonl`; per-case details write to `eval/details/`.
+- **Multi-model evals (Oct 2026):** `eval_compare.py` runs many models over a set (resumable, writes `eval/runs/<set>/<prompt>/<model>.jsonl`); `eval_score.py` scores against gold labels (`--gold`) or by agreement, and prints cost per image; `eval_label_sample.py` is the fast labeler (`localhost:8001`) for the 381-image stratified `eval/sets/sample.json`, contested images first. The 115-image set above is mostly juncos, squirrels and empty frames, so it overstates accuracy.
 
 ### Model Accuracy (115 labeled images)
 
@@ -108,15 +118,45 @@ Optional:
 - `VISION_MODEL` — defaults to `google-gla:gemini-3-flash-preview`
 - `VISION_PROMPT` — defaults to `default_v2`
 - `FEEDER_LOCATION` — e.g. `Toronto, Ontario, Canada` (used in vision prompt)
+- `TIMEZONE` — defaults to `America/Toronto` (DST-aware via `zoneinfo`)
 - `FREEBIRD_DATA_DIR` — defaults to `/data` (Docker) or override for local dev
 - `POLL_INTERVAL_SECONDS` — defaults to `15`
+- `VISION_REVIEW_MODEL` — optional second-opinion/failover model (empty = off)
+- `QA_MODEL` — defaults to `claude-sonnet-5-5`
 
-## Docker
+## Deployment
+
+Production runs on `eleven` (Debian 13, headless 11" MacBook Air) as the systemd user unit `freebird.service` (`ssh eleven`; `systemctl --user restart freebird`; logs via `journalctl --user -u freebird`). Deploy = push to GitHub, then `git pull` and restart on eleven. The commands below are the old `screen` setup on `thirteen`, kept for reference.
+
+```bash
+# Start
+ssh thirteen "screen -dmS freebird bash -c 'cd ~/development/freebird && uv run python -m freebird.main 2>&1 | tee freebird.log'"
+
+# Check status
+ssh thirteen "screen -ls"
+
+# View logs
+ssh thirteen "tail -50 ~/development/freebird/freebird.log"
+
+# Attach to session (interactive)
+ssh thirteen -t "screen -r freebird"
+
+# Stop
+ssh thirteen "screen -S freebird -X quit"
+
+# Restart (stop + start)
+ssh thirteen "screen -S freebird -X quit"; sleep 2
+ssh thirteen "screen -dmS freebird bash -c 'cd ~/development/freebird && uv run python -m freebird.main 2>&1 | tee freebird.log'"
+```
+
+**Deploy workflow**: develop locally → push to GitHub → `ssh thirteen "cd ~/development/freebird && git pull"` → restart screen session.
+
+### Docker (alternative, not currently used)
 
 - `Dockerfile`: python:3.12-slim + ffmpeg + uv. Deps cached in separate layer. Copies `eval/prompts/` for prompt loading.
 - `compose.yaml`: bind mount `./data` at `/data` for SQLite + media persistence.
+- `.dockerignore`: excludes `data/`, `.venv/`, `.git/` to keep build context small.
 - Build & deploy: `docker compose build && docker compose up -d`
-- Remote deploy: `docker context create macbook --docker "host=ssh://user@host"` then `docker compose --context macbook up -d --build`
 
 ## Plan Files
 

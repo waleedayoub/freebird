@@ -38,6 +38,12 @@ BIRDNET_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIRDNET_CONFIDENCE_THRESH
 VISION_MODEL: str = os.getenv("VISION_MODEL", "google-gla:gemini-3-flash-preview")
 VISION_PROMPT: str = os.getenv("VISION_PROMPT", "default_v2")
 GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+# Optional second opinion. Runs only on lifer candidates and low-confidence birds, and
+# doubles as the failover when the primary model errors. Empty = off.
+VISION_REVIEW_MODEL: str = os.getenv("VISION_REVIEW_MODEL", "")
+
+# Telegram Q&A
+QA_MODEL: str = os.getenv("QA_MODEL", "claude-sonnet-5-5")
 
 # Feeder location and timezone
 FEEDER_LOCATION: str = os.getenv("FEEDER_LOCATION", "your city")

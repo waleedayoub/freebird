@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Alert if pipeline hasn't processed successfully for this many seconds
 ERROR_ALERT_THRESHOLD = 5 * 60
 
+# Normal poll window, and how far back to catch up after an outage or restart.
+LOOKBACK_SECONDS = 3600
+MAX_CATCHUP_SECONDS = 48 * 3600
+
 
 class Pipeline:
     def __init__(
@@ -55,8 +59,13 @@ class Pipeline:
 
     async def _poll_cycle(self) -> None:
         now = int(time.time())
-        # Look back 1 hour to catch any events we might have missed
-        start = now - 3600
+        # Look back 1 hour, or further back to the last successful poll so an outage
+        # (DNS, power, API) doesn't lose events. Already-seen events are skipped by trace id.
+        start = now - LOOKBACK_SECONDS
+        last_ok = float(self.db.kv_get("last_poll_ok", "0") or 0)
+        if last_ok:
+            start = min(start, int(last_ok) - 300)
+        start = max(start, now - MAX_CATCHUP_SECONDS)
         events = self.api.get_events(start_timestamp=start, end_timestamp=now)
 
         new_count = 0
@@ -68,6 +77,7 @@ class Pipeline:
 
         if new_count:
             logger.info("Processed %d new events", new_count)
+        self.db.kv_set("last_poll_ok", str(now))
 
     async def _process_event(self, event: MotionEvent) -> None:
         logger.info("Processing event %s from %s", event.trace_id, event.device_name)
@@ -88,6 +98,7 @@ class Pipeline:
         species_latin = None
         confidence = None
         is_lifer = False
+        vision = None
 
         if image_path:
             vision = await analyze_image(image_path, sighting_id, self.db)
@@ -118,4 +129,10 @@ class Pipeline:
         # Step 7: Notify only on new lifers
         if is_lifer:
             logger.info("NEW LIFER: %s", species)
-            await self.bot.send_lifer_alert(species, confidence, image_path, video_path)
+            unsure = vision is not None and (vision.disputed or vision.confidence == "low")
+            if unsure:
+                # Ask before celebrating: the answer also becomes a gold label for evals.
+                options = [species, *vision.alternatives]
+                await self.bot.send_lifer_review(sighting_id, options, image_path, video_path)
+            else:
+                await self.bot.send_lifer_alert(species, confidence, image_path, video_path)

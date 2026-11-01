@@ -1,0 +1,35 @@
+Analyze this bird feeder camera image.
+
+CAMERA CONTEXT:
+- This is a small backyard platform bird feeder in {location}.
+- The camera has a wide-angle lens mounted directly on the feeder, so birds are inches from the lens and look MUCH larger than they are. Do not use apparent size for identification. A Dark-eyed Junco can fill the whole frame.
+- The turquoise/green object is the feeder platform (about 30 cm / 12 inches across). It is not a picnic table.
+- Identify by plumage pattern, bill shape and other field marks, not size.
+
+WHAT COUNTS AS A BIRD:
+- Most motion events here are birds. If an animal on or near the platform has feathers, a bill or talons, it is a bird. Fur, ears and paws mean a mammal.
+- A partial bird still counts: a tail, wing, or part of the body at the frame edge, or a blurred bird leaving the frame, means is_bird = true. Give your best guess and set confidence to "low".
+- If you see only the feeder, seed, or yard and no animal, set is_bird to false and animal_type to null.
+
+SPECIES NAMING (important, names must be consistent across images):
+- Use the standard English common name from the AOS / eBird North American checklist, in Title Case: "Dark-eyed Junco", "House Sparrow", "European Starling", "Red-winged Blackbird".
+- Put only the species in `species`. No subspecies, plumage morph, sex or parentheses there. Put "Slate-colored", "female", "juvenile" and similar in `sex`, `age` or `notable`.
+- Fill `species_latin` with the scientific name.
+- If you cannot name the species at all, set species to "Unidentified bird". Never invent a name like "Unknown bird" or "bird".
+
+DECIDING BETWEEN LOOK-ALIKES:
+- Common mix-ups at feeders: House Finch vs Purple Finch (House Finch: brown streaking on belly and flanks, flat brown back, red limited to head and breast; Purple Finch: raspberry wash over head, back and flanks, blurry or no streaking, notched tail); House Sparrow vs Song Sparrow vs American Tree Sparrow vs Chipping Sparrow (check for a black bib, rufous cap, central breast spot, two wing bars, bill color); female Red-winged Blackbird vs sparrows (heavier body, long pointed bill, heavy streaking); Brown-headed Cowbird vs female blackbirds (short conical bill, plain brown head).
+- Prefer common regional feeder birds. Only name an uncommon species when you can clearly see its diagnostic marks, and say which marks in `notable`.
+- When two or more species are plausible, give your single best choice in `species`, list the other plausible species in `alternatives` (best first, at most 3), and lower the confidence.
+
+CONFIDENCE:
+- "high": diagnostic field marks are clearly visible and no look-alike is plausible.
+- "medium": some marks visible, but the angle or lighting leaves a look-alike plausible.
+- "low": blurry, mostly obscured, only the back or top of the head visible, or two species equally plausible.
+- Always provide a best guess, even at low confidence.
+
+NON-BIRDS:
+- For birds, set animal_type to null.
+- For other animals use a specific common name: "squirrel", "chipmunk", "rabbit", "raccoon", "cat", "deer". Use "mammal" or "insect" only if you truly cannot tell. The usual non-bird visitor here is the Eastern Gray Squirrel.
+
+Describe what the animal is doing in `behavior` and anything unusual in `notable`.

@@ -14,20 +14,7 @@ from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
 
-ALIASES = {
-    "common starling": "european starling", "european starling provincial": "european starling",
-    "house sparrow pachysylvia": "house sparrow", "slate-colored junco": "dark-eyed junco",
-    "dark-eyed junco (slate-colored)": "dark-eyed junco", "american tree sparrow": "american tree sparrow",
-    "eastern gray squirrel": "squirrel", "gray squirrel": "squirrel", "grey squirrel": "squirrel",
-    "eastern chipmunk": "chipmunk", "unknown bird": "unknown", "bird": "unknown",
-}
-
-
-def norm_species(s: str | None) -> str | None:
-    if not s:
-        return None
-    s = re.sub(r"\s*\(.*?\)", "", s.strip().lower())
-    return ALIASES.get(s, s)
+from freebird.species import norm_species  # noqa: E402
 
 
 def klass(pred: dict) -> str:
@@ -110,6 +97,31 @@ def score_consensus(runs, prod_labels: dict[str, str]) -> dict:
     return {"ids": ids, "votes": votes, "consensus": consensus, "contested": contested}
 
 
+# USD per 1M tokens (input, output). Claude prices are first-party list prices. Gemini prices come
+# from third-party summaries as of Oct 2026 and Google may change them (Argon's $2/$10 is a promo
+# through Nov 30; $4/$20 after), so treat the Gemini rows as estimates.
+PRICES = {
+    "anthropic_claude-haiku-5-5": (0.10, 0.50), "anthropic_claude-sonnet-5-5": (2.0, 10.0),
+    "anthropic_claude-opus-5-5": (4.0, 20.0), "anthropic_claude-fable-5-1": (10.0, 50.0),
+    "google-gla_gemini-3.1-flash-lite": (0.25, 1.50), "google-gla_gemini-3-flash-preview": (0.50, 3.0),
+    "google-gla_gemini-4-argon": (2.0, 10.0),
+}
+
+
+def score_cost(runs, events_per_month: int = 3000) -> None:
+    """Average real token use per image x list price. Thinking tokens bill as output."""
+    print(f"\n{'model':42} {'in_tok':>6} {'out_tok':>7} {'$/1k imgs':>10} {'$/mo @' + str(events_per_month):>12}")
+    for name, recs in runs.items():
+        ok = [r for r in recs.values() if not r.get("error") and r.get("in_tok")]
+        if not ok or name not in PRICES:
+            continue
+        pin, pout = PRICES[name]
+        it = sum(r["in_tok"] for r in ok) / len(ok)
+        ot = sum(r.get("out_tok") or 0 for r in ok) / len(ok)
+        per = (it * pin + ot * pout) / 1e6
+        print(f"{name:42} {it:6.0f} {ot:7.0f} {1000 * per:10.2f} {events_per_month * per:12.2f}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", default="ground_truth")
@@ -129,6 +141,7 @@ def main() -> None:
                 for sid, b, sp, at in c.execute(
                     "SELECT sighting_id,is_bird,species,animal_type FROM vision_analyses")}
         score_consensus(runs, prod)
+    score_cost(runs)
 
 
 if __name__ == "__main__":

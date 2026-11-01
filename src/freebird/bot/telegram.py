@@ -26,6 +26,7 @@ class TelegramBot:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        self._last_exchange = ""  # last question and answer, passed to Q&A for follow-ups
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -35,9 +36,11 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("species", self._cmd_species))
         self.app.add_handler(CommandHandler("show", self._cmd_show))
         self.app.add_handler(CommandHandler("latest", self._cmd_latest))
+        self.app.add_handler(CommandHandler("refilled", self._cmd_refilled))
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("help", self._cmd_start))
-        self.app.add_handler(CallbackQueryHandler(self._callback_species_detail))
+        self.app.add_handler(CallbackQueryHandler(self._callback_review, pattern=r"^rv:"))
+        self.app.add_handler(CallbackQueryHandler(self._callback_species_detail, pattern=r"^species:"))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_freeform)
         )
@@ -73,6 +76,34 @@ class TelegramBot:
                 )
         except Exception:
             logger.exception("Failed to send lifer alert")
+
+    async def send_lifer_review(
+        self,
+        sighting_id: str,
+        options: list[str],
+        image_path: Path | None,
+        video_path: Path | None = None,
+    ) -> None:
+        """Possible new species the models weren't sure about: ask which it is."""
+        options = options[:4]
+        caption = f"Possible NEW LIFER: {options[0]}? I'm not sure. Which is it?"
+        rows = [[InlineKeyboardButton(o, callback_data=f"rv:{sighting_id}:{i}")]
+                for i, o in enumerate(options)]
+        rows.append([InlineKeyboardButton("None of these", callback_data=f"rv:{sighting_id}:x")])
+        markup = InlineKeyboardMarkup(rows)
+        self.db.add_pending_review(sighting_id, options)
+        try:
+            if image_path and image_path.exists():
+                await self.app.bot.send_photo(
+                    chat_id=TELEGRAM_CHAT_ID, photo=image_path.open("rb"),
+                    caption=caption, reply_markup=markup)
+            else:
+                await self.app.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID, text=caption, reply_markup=markup)
+            if video_path and video_path.exists():
+                await self.app.bot.send_video(chat_id=TELEGRAM_CHAT_ID, video=video_path.open("rb"))
+        except Exception:
+            logger.exception("Failed to send lifer review")
 
     async def send_daily_summary(self) -> None:
         """Send the 6pm daily summary: visits, unique species, per-species counts."""
@@ -128,7 +159,8 @@ class TelegramBot:
             "/lifers -- All first-ever sightings\n"
             "/species <name> -- Search by species\n"
             "/show <name> -- Show photo/video of a species\n"
-            "/latest -- Latest video from today\n\n"
+            "/latest -- Latest video from today\n"
+            "/refilled -- Tell me you topped up the feeder\n\n"
             "Or just ask me anything about your birds!"
         )
 
@@ -301,6 +333,43 @@ class TelegramBot:
             )
         await update.message.reply_video(video=vid.open("rb"))
 
+    async def _cmd_refilled(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from datetime import datetime, timezone
+        self.db.kv_set("refilled_at", datetime.now(timezone.utc).isoformat())
+        await update.message.reply_text("Thanks! I'll watch for birds and stay quiet about the feeder for a few days.")
+
+    async def _callback_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        await query.answer()
+        try:
+            _, sighting_id, choice = (query.data or "").split(":", 2)
+        except ValueError:
+            return
+        options = self.db.get_pending_review(sighting_id)
+        if options is None:
+            await self._edit_review(query, "Already answered, thanks!")
+            return
+        if choice == "x":
+            self.db.resolve_review(sighting_id, "other")
+            self.db.set_species(sighting_id, None)
+            await self._edit_review(query, "Okay, not counting that one as a new species.")
+            return
+        try:
+            label = options[int(choice)]
+        except (ValueError, IndexError):
+            return
+        lifer = self.db.set_species(sighting_id, label)
+        self.db.resolve_review(sighting_id, label)
+        await self._edit_review(
+            query, f"Confirmed NEW LIFER: {label}!" if lifer else f"Logged as {label} (already on your list).")
+
+    @staticmethod
+    async def _edit_review(query, text: str) -> None:
+        if query.message and query.message.photo:
+            await query.edit_message_caption(caption=text)
+        else:
+            await query.edit_message_text(text)
+
     async def _callback_species_detail(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -348,5 +417,14 @@ class TelegramBot:
 
         user_name = update.effective_user.first_name or ""
         await update.message.reply_chat_action("typing")
-        answer = await ask_claude(question, self.db, user_name=user_name)
-        await update.message.reply_text(answer)
+        answer = await ask_claude(question, self.db, user_name=user_name, previous=self._last_exchange)
+        await update.message.reply_text(answer.text)
+        self._last_exchange = f"Q: {question}\nA: {answer.text}"[:1500]
+        for path, kind in answer.media:
+            try:
+                if kind == "video":
+                    await update.message.reply_video(video=path.open("rb"))
+                else:
+                    await update.message.reply_photo(photo=path.open("rb"))
+            except Exception:
+                logger.exception("Failed to send %s", path)
