@@ -51,8 +51,8 @@ def score_gold(runs, gold: dict[str, dict]) -> None:
         n = ok_bird = ok_class = sp_n = sp_ok = errs = 0
         secs = []; it = []; ot = []
         for sid, lab in gold.items():
-            if lab["is_bird"] and not lab["label"]:
-                continue  # unlabeled bird
+            if lab.get("unsure") or (lab["is_bird"] and not lab["label"]):
+                continue  # unsure, or an unlabeled bird
             r = recs.get(sid)
             if r is None:
                 continue

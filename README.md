@@ -69,7 +69,7 @@ Tools for comparing vision model accuracy against human-labeled ground truth.
 ### Label images
 
 ```bash
-uv run python -m freebird.eval_label      # Opens web UI at localhost:8000
+uv run python -m freebird.eval_label      # Labeling web UI at localhost:8000 (--set sample by default)
 ```
 
 Web UI shows each keyshot image alongside a form to label it as bird (with species), critter, or empty. Labels save to `eval/ground_truth.json`.
@@ -115,7 +115,7 @@ src/freebird/
   bot/
     telegram.py        # Telegram bot commands + notifications
     claude.py          # Claude Q&A chatbot
-  eval_label.py        # Web UI for labeling images (FastAPI)
+  eval_label.py        # Labeling web UI (FastAPI)
   eval_run.py          # Eval runner (pydantic-evals)
   vision_backfill.py   # Batch re-analysis script
 eval/

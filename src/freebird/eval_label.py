@@ -1,240 +1,194 @@
-"""Web UI for labeling keyshot images with ground truth species.
+"""The one labeling UI for eval sets.
 
-Run: uv run python -m freebird.eval_label
-Then open http://localhost:8000
+Run: uv run python -m freebird.eval_label [--set sample] [--port 8000]   then open http://localhost:8000
+
+Labels a named set (eval/sets/<set>.json, or the legacy ground_truth) and saves to
+eval/sets/<set>_gold.json (legacy: eval/ground_truth.json) as
+{id: {label, is_bird, unsure, notes?}}, the format eval_score reads.
+
+If model runs exist for the set (eval/runs/<set>/<prompt>/*.jsonl) the most contested images come
+first and the species the models proposed become buttons (alphabetical, no model names, to avoid
+anchoring). Without runs it labels in id order with a species autocomplete.
+
+Keys: 1-9 pick a candidate species, E empty, S squirrel, U unsure (excluded from scoring), Z undo.
+For anything else type a species and choose bird or critter.
 """
 from __future__ import annotations
 
+import argparse
+import collections
+import html
 import json
-import logging
+import sqlite3
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Form
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from freebird.config import MEDIA_DIR, ensure_dirs
-from freebird.storage.database import Database
+from freebird.eval_compare import load_set
+from freebird.eval_score import klass, load_runs
+from freebird.species import display_name, is_real_species, norm_species
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
-logger = logging.getLogger("freebird.eval_label")
-
-GROUND_TRUTH_PATH = Path(__file__).resolve().parents[2] / "eval" / "ground_truth.json"
-
-app = FastAPI()
+EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
 
 
-def _load_ground_truth() -> dict:
-    if GROUND_TRUTH_PATH.exists():
-        return json.loads(GROUND_TRUTH_PATH.read_text())
-    return {}
+class Labeler:
+    def __init__(self, set_name: str, db_path: Path, order_prompt: str, gold_path: Path | None = None) -> None:
+        self.set_name = set_name
+        self.gold_path = gold_path or (
+            EVAL_DIR / "ground_truth.json" if set_name == "ground_truth"
+            else EVAL_DIR / "sets" / f"{set_name}_gold.json")
+        items = load_set(set_name, db_path)
+        self.paths = dict(items)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        self.when = dict(conn.execute("SELECT id, timestamp FROM sightings"))
+        self.known = sorted({display_name(r[0]) for r in conn.execute(
+            "SELECT DISTINCT species FROM sightings WHERE species IS NOT NULL") if is_real_species(r[0])})
+        conn.close()
+        self.queue = self._build_queue([i for i, _ in items], order_prompt)
+
+    def _build_queue(self, ids: list[str], order_prompt: str) -> list[dict]:
+        order_runs = load_runs(self.set_name, order_prompt)
+        root = EVAL_DIR / "runs" / self.set_name
+        cand_runs = [r for d in sorted(root.glob("*")) if d.is_dir()
+                     for r in load_runs(self.set_name, d.name).values()]
+
+        def ok(r, sid):
+            return sid in r and not r[sid].get("error")
+
+        queue = []
+        for sid in ids:
+            votes = collections.Counter(klass(r[sid]["pred"]) for r in order_runs.values() if ok(r, sid))
+            agree = max(votes.values()) / sum(votes.values()) if votes else 1.0
+            cands = {klass(r[sid]["pred"]) for r in cand_runs if ok(r, sid)}
+            queue.append({"id": sid, "agree": agree, "cands": cands})
+        queue.sort(key=lambda q: (q["agree"], q["id"]))  # most contested first
+        return queue
+
+    def gold(self) -> dict:
+        return json.loads(self.gold_path.read_text()) if self.gold_path.exists() else {}
+
+    def write(self, g: dict) -> None:
+        self.gold_path.parent.mkdir(parents=True, exist_ok=True)
+        self.gold_path.write_text(json.dumps(g, indent=2) + "\n")
 
 
-def _save_ground_truth(data: dict) -> None:
-    GROUND_TRUTH_PATH.write_text(json.dumps(data, indent=2) + "\n")
+STYLE = """
+body{font-family:system-ui;background:#1a1a2e;color:#eee;margin:0;padding:20px;max-width:1000px;margin:auto}
+img{width:100%;border-radius:8px}
+button,select{margin:4px;padding:10px 14px;border:0;border-radius:6px;background:#2a3a5e;color:#fff;font-size:1em;cursor:pointer}
+button:hover{background:#5b8def}.m{color:#888}.sub{background:#222}
+input[type=text],textarea{padding:9px;border-radius:6px;border:1px solid #444;background:#2a2a3e;color:#eee;font-size:1em}
+input[type=text]{width:16em}textarea{width:100%;height:3.2em;box-sizing:border-box}
+"""
+
+SCRIPT = """
+function k(b){document.getElementById('kind').value=b.dataset.kind}
+function typed(){const t=document.getElementById('typed').value.trim();if(!t)return;
+  document.getElementById('kind').value=document.getElementById('tk').value;
+  document.getElementById('f').requestSubmit()}
+document.getElementById('typed').addEventListener('keydown',e=>{if(e.key=='Enter'){e.preventDefault();typed()}});
+document.addEventListener('keydown',e=>{
+  if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
+  const b=[...document.querySelectorAll('#f button[data-key]')];
+  const key=e.key.toLowerCase();
+  if(key=='z'){document.getElementById('fu').submit();return}
+  const t=b.find(x=>x.dataset.key==key);if(t)t.click()});
+"""
 
 
-def _get_sightings_to_label(db: Database, ground_truth: dict) -> list[dict]:
-    """Get sightings with images that haven't been labeled yet."""
-    rows = db.conn.execute(
-        """SELECT id, image_path, timestamp, device_name, species
-           FROM sightings
-           WHERE image_path IS NOT NULL
-           ORDER BY timestamp ASC"""
-    ).fetchall()
-    return [
-        {"id": r["id"], "image_path": r["image_path"], "timestamp": r["timestamp"],
-         "device_name": r["device_name"], "species": r["species"]}
-        for r in rows if r["id"] not in ground_truth
-    ]
+def make_app(lab: Labeler) -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/img/{sid}")
+    async def img(sid: str):
+        p = lab.paths.get(sid)
+        return FileResponse(p) if p and p.exists() else HTMLResponse("not found", 404)
+
+    @app.post("/save")
+    async def save(sid: str = Form(...), kind: str = Form(...), pick: str = Form(""),
+                   typed: str = Form(""), notes: str = Form("")):
+        label = (pick or typed).strip()
+        if sid not in lab.paths or not (label or kind in ("empty", "unsure")):
+            return RedirectResponse("/", status_code=303)
+        if kind == "bird":
+            entry = {"label": display_name(label) or label, "is_bird": True, "unsure": False}
+        elif kind == "critter":
+            entry = {"label": norm_species(label) or label.lower(), "is_bird": False, "unsure": False}
+        elif kind == "unsure":
+            entry = {"label": "unsure", "is_bird": False, "unsure": True}
+        else:
+            entry = {"label": "empty", "is_bird": False, "unsure": False}
+        if notes.strip():
+            entry["notes"] = notes.strip()
+        g = lab.gold()
+        g[sid] = entry
+        lab.write(g)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/undo")
+    async def undo():
+        g = lab.gold()
+        if g:
+            g.popitem()  # json keeps insertion order, so this is the most recent label
+            lab.write(g)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/")
+    async def index():
+        g = lab.gold()
+        todo = [q for q in lab.queue if q["id"] not in g]
+        if not todo:
+            return HTMLResponse(f"<style>{STYLE}</style><h1>All done: {len(g)} labeled</h1>"
+                                '<form method=post action=/undo><button class=sub>Z. Undo last label</button></form>')
+        q = todo[0]
+        birds = sorted({k.split(":", 1)[1] for k in q["cands"] if k.startswith("bird:") and k != "bird:unknown"})
+        critters = sorted({k.split(":", 1)[1] for k in q["cands"]
+                           if k.startswith("animal:") and k != "animal:squirrel"})
+        btns = "".join(
+            f'<button name=pick value="{html.escape(c)}" data-kind=bird data-key={i + 1} onclick="k(this)">'
+            f'{i + 1}. {html.escape(display_name(c) or c)}</button>' for i, c in enumerate(birds[:9]))
+        btns += "".join(
+            f'<button name=pick value="{html.escape(a)}" data-kind=critter onclick="k(this)">{html.escape(a)}</button>'
+            for a in critters)
+        species_opts = "".join(f'<option value="{html.escape(s)}">' for s in lab.known)
+        when = html.escape(str(lab.when.get(q["id"], "")))
+        sid = html.escape(q["id"])
+        return HTMLResponse(f"""<!DOCTYPE html><meta charset=utf-8><title>FreeBird labeler</title>
+<style>{STYLE}</style>
+<p class=m>{lab.set_name} &middot; {len(g)} labeled &middot; {len(todo)} left &middot; models agreed {q['agree']:.0%} &middot; {when}</p>
+<img src="/img/{sid}">
+<form method=post action=/save id=f><input type=hidden name=sid value="{sid}"><input type=hidden name=kind id=kind value=bird>
+{btns}
+<button name=pick value=empty data-kind=empty data-key=e onclick="k(this)">E. Empty</button>
+<button name=pick value=squirrel data-kind=critter data-key=s onclick="k(this)">S. Squirrel</button>
+<button name=pick value=unsure data-kind=unsure data-key=u onclick="k(this)">U. Unsure</button>
+<div style="margin:8px 4px"><input type=text id=typed name=typed list=sp placeholder="or type a species / animal, Enter" autocomplete=off>
+<datalist id=sp>{species_opts}</datalist>
+<select id=tk><option value=bird>bird</option><option value=critter>critter</option></select>
+<button type=button onclick="typed()">Save typed</button></div>
+<textarea name=notes placeholder="Notes (optional)"></textarea>
+</form>
+<form method=post action=/undo id=fu><button class=sub>Z. Undo last label</button></form>
+<script>{SCRIPT}</script>""")
+
+    return app
 
 
-def _get_known_species(db: Database) -> list[str]:
-    """Get distinct species names for autocomplete."""
-    rows = db.conn.execute(
-        "SELECT DISTINCT species FROM sightings WHERE species IS NOT NULL ORDER BY species"
-    ).fetchall()
-    return [r["species"] for r in rows]
-
-
-@app.get("/media/{path:path}")
-async def serve_media(path: str):
-    file_path = (MEDIA_DIR / path).resolve()
-    if not file_path.is_relative_to(MEDIA_DIR.resolve()):
-        return HTMLResponse("Forbidden", status_code=403)
-    if file_path.exists():
-        return FileResponse(file_path)
-    return HTMLResponse("Not found", status_code=404)
-
-
-@app.post("/label")
-async def save_label(
-    sighting_id: str = Form(...),
-    category: str = Form(...),
-    species: str = Form(""),
-    animal_type: str = Form(""),
-    notes: str = Form(""),
-):
-    gt = _load_ground_truth()
-
-    if category == "bird":
-        gt[sighting_id] = {"label": species.strip(), "is_bird": True}
-    elif category == "critter":
-        gt[sighting_id] = {"label": animal_type.strip(), "is_bird": False}
-    else:
-        gt[sighting_id] = {"label": "empty", "is_bird": False}
-
-    if notes.strip():
-        gt[sighting_id]["notes"] = notes.strip()
-
-    _save_ground_truth(gt)
-    logger.info("Labeled %s: %s", sighting_id, gt[sighting_id])
-    return RedirectResponse("/", status_code=303)
-
-
-@app.post("/skip")
-async def skip(sighting_id: str = Form(...)):
-    return RedirectResponse("/", status_code=303)
-
-
-@app.get("/")
-async def index():
-    ensure_dirs()
-    db = Database()
-    gt = _load_ground_truth()
-    unlabeled = _get_sightings_to_label(db, gt)
-    species_list = _get_known_species(db)
-    total = db.conn.execute("SELECT COUNT(*) FROM sightings WHERE image_path IS NOT NULL").fetchone()[0]
-    labeled_count = len(gt)
-    db.close()
-
-    if not unlabeled:
-        return HTMLResponse(f"<h1>All done!</h1><p>{labeled_count} / {total} labeled.</p>")
-
-    s = unlabeled[0]
-    # Convert absolute image path to relative media URL
-    image_path = Path(s["image_path"])
-    try:
-        rel_path = image_path.relative_to(MEDIA_DIR)
-    except ValueError:
-        rel_path = image_path.name
-    image_url = f"/media/{rel_path}"
-
-    species_options = "\n".join(f'<option value="{sp}">' for sp in species_list)
-
-    html = f"""<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<title>FreeBird Labeler</title>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; }}
-  .container {{ max-width: 900px; margin: 0 auto; padding: 20px; }}
-  .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }}
-  h1 {{ font-size: 1.4em; }}
-  .progress {{ color: #888; font-size: 0.95em; }}
-  .main {{ display: flex; gap: 24px; }}
-  .image-panel {{ flex: 1; }}
-  .image-panel img {{ width: 100%; border-radius: 8px; border: 2px solid #333; }}
-  .form-panel {{ width: 300px; flex-shrink: 0; }}
-  .meta {{ font-size: 0.85em; color: #888; margin-bottom: 12px; }}
-  .radio-group {{ display: flex; gap: 8px; margin-bottom: 16px; }}
-  .radio-group label {{
-    flex: 1; text-align: center; padding: 10px 0; border-radius: 6px;
-    background: #2a2a3e; cursor: pointer; transition: all 0.15s;
-    border: 2px solid transparent;
-  }}
-  .radio-group input {{ display: none; }}
-  .radio-group input:checked + span {{ font-weight: 600; }}
-  .radio-group label:has(input:checked) {{ border-color: #5b8def; background: #2a3a5e; }}
-  .field {{ margin-bottom: 12px; }}
-  .field label {{ display: block; font-size: 0.85em; color: #aaa; margin-bottom: 4px; }}
-  .field input, .field select, .field textarea {{
-    width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #444;
-    background: #2a2a3e; color: #e0e0e0; font-size: 0.95em;
-  }}
-  .field textarea {{ resize: vertical; height: 60px; }}
-  .buttons {{ display: flex; gap: 8px; margin-top: 16px; }}
-  .buttons button {{
-    flex: 1; padding: 10px; border: none; border-radius: 6px;
-    font-size: 1em; cursor: pointer; font-weight: 500;
-  }}
-  .btn-save {{ background: #5b8def; color: #fff; }}
-  .btn-save:hover {{ background: #4a7de0; }}
-  .btn-skip {{ background: #3a3a4e; color: #ccc; }}
-  .btn-skip:hover {{ background: #4a4a5e; }}
-  .hint {{ font-size: 0.8em; color: #666; margin-top: 8px; text-align: center; }}
-  #species-field, #animal-field {{ display: none; }}
-</style>
-</head><body>
-<div class="container">
-  <div class="header">
-    <h1>FreeBird Labeler</h1>
-    <div class="progress">{labeled_count} / {total} labeled &middot; {len(unlabeled)} remaining</div>
-  </div>
-  <div class="main">
-    <div class="image-panel">
-      <img src="{image_url}" alt="keyshot">
-      <div class="meta">{s['timestamp']} &middot; {s['device_name'] or ''} &middot; Current: {s['species'] or 'none'}</div>
-    </div>
-    <div class="form-panel">
-      <form id="label-form" method="post" action="/label">
-        <input type="hidden" name="sighting_id" value="{s['id']}">
-
-        <div class="radio-group">
-          <label><input type="radio" name="category" value="bird" onchange="toggleFields()"><span>Bird</span></label>
-          <label><input type="radio" name="category" value="critter" onchange="toggleFields()"><span>Critter</span></label>
-          <label><input type="radio" name="category" value="empty" onchange="toggleFields()"><span>Empty</span></label>
-        </div>
-
-        <div class="field" id="species-field">
-          <label>Species</label>
-          <input type="text" name="species" list="species-list" placeholder="e.g. Dark-eyed Junco" autocomplete="off">
-          <datalist id="species-list">{species_options}</datalist>
-        </div>
-
-        <div class="field" id="animal-field">
-          <label>Animal type</label>
-          <select name="animal_type">
-            <option value="squirrel">Squirrel</option>
-            <option value="chipmunk">Chipmunk</option>
-            <option value="cat">Cat</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label>Notes (optional)</label>
-          <textarea name="notes" placeholder="Any observations..."></textarea>
-        </div>
-
-        <div class="buttons">
-          <button type="button" class="btn-skip" onclick="document.getElementById('skip-form').submit()">Skip</button>
-          <button type="submit" class="btn-save">Save &amp; Next</button>
-        </div>
-        <div class="hint">Enter = save &middot; &rarr; = skip</div>
-      </form>
-      <form id="skip-form" method="post" action="/skip" style="display:none">
-        <input type="hidden" name="sighting_id" value="{s['id']}">
-      </form>
-    </div>
-  </div>
-</div>
-<script>
-function toggleFields() {{
-  const cat = document.querySelector('input[name="category"]:checked');
-  document.getElementById('species-field').style.display = cat && cat.value === 'bird' ? 'block' : 'none';
-  document.getElementById('animal-field').style.display = cat && cat.value === 'critter' ? 'block' : 'none';
-}}
-document.addEventListener('keydown', (e) => {{
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-  if (e.key === 'ArrowRight') document.getElementById('skip-form').submit();
-}});
-</script>
-</body></html>"""
-
-    return HTMLResponse(html)
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--set", default="sample", help="eval set name (eval/sets/<set>.json, or ground_truth)")
+    ap.add_argument("--db", default=str(EVAL_DIR / "work" / "birds.db"),
+                    help="sightings DB; images are found via image_path or <db dir>/media/")
+    ap.add_argument("--prompt", default="default_v2", help="prompt whose model runs order the queue")
+    ap.add_argument("--gold", help="override the gold-label file path")
+    ap.add_argument("--port", type=int, default=8000)
+    args = ap.parse_args()
+    lab = Labeler(args.set, Path(args.db), args.prompt, Path(args.gold) if args.gold else None)
+    print(f"{len(lab.queue)} images in '{args.set}', labels -> {lab.gold_path}")
+    uvicorn.run(make_app(lab), host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    main()

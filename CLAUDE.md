@@ -40,7 +40,7 @@ src/freebird/
   bot/
     telegram.py        # python-telegram-bot handlers + notification methods
     claude.py          # Anthropic API for freeform Q&A
-  eval_label.py        # Web UI for labeling keyshot images (FastAPI)
+  eval_label.py        # The one labeling web UI (FastAPI): contested-first, species buttons, undo
   eval_run.py          # Eval runner: pydantic-evals harness with IsBirdCorrect + SpeciesMatch
   vision_backfill.py   # Batch re-analysis of historical images
 eval/
@@ -82,12 +82,12 @@ eval/
 
 ## Eval Framework
 
-- `eval_label.py`: FastAPI web UI at `localhost:8000` for labeling keyshots. Saves to `eval/ground_truth.json`.
+- `eval_label.py`: the single labeling UI. `uv run python -m freebird.eval_label [--set sample]` then open `localhost:8000`. Labels a named set (`eval/sets/<set>.json`) and saves to `eval/sets/<set>_gold.json` (legacy `ground_truth` saves to `eval/ground_truth.json`). If model runs exist for the set, the most contested images come first with the models' species as buttons.
 - `eval_run.py`: pydantic-evals harness. Evaluators: `IsBirdCorrect` (bird vs non-bird) and `SpeciesMatch` (species/animal_type).
 - `SpeciesMatch` logic: empty frames check `animal_type is None`, birds use case-insensitive species match, non-birds use case-insensitive containment (e.g., "squirrel" matches `animal_type: "squirrel"` or `species: "Eastern Gray Squirrel"`).
 - Unlabeled birds (`is_bird: true`, `label: ""`) are skipped during dataset construction.
 - Results append to `eval/results.jsonl`; per-case details write to `eval/details/`.
-- **Multi-model evals (Oct 2026):** `eval_compare.py` runs many models over a set (resumable, writes `eval/runs/<set>/<prompt>/<model>.jsonl`); `eval_score.py` scores against gold labels (`--gold`) or by agreement, and prints cost per image; `eval_label_sample.py` is the fast labeler (`localhost:8001`) for the 381-image stratified `eval/sets/sample.json`, contested images first. The 115-image set above is mostly juncos, squirrels and empty frames, so it overstates accuracy.
+- **Multi-model evals (Oct 2026):** `eval_compare.py` runs many models over a set (resumable, writes `eval/runs/<set>/<prompt>/<model>.jsonl`); `eval_score.py` scores against gold labels (`--gold`) or by agreement, and prints cost per image; `eval/sets/sample.json` is a 381-image stratified set labeled with `eval_label`. The 115-image set above is mostly juncos, squirrels and empty frames, so it overstates accuracy.
 
 ### Model Accuracy (115 labeled images)
 
