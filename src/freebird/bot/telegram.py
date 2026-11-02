@@ -435,7 +435,9 @@ class TelegramBot:
         mode = how_addressed(update.effective_chat.type, text, me.username or "", replied_to_bot,
                              self._last_answer_at, time.time())
         if mode is None:
-            return  # nothing outside an @mention, a reply or an open conversation is read or stored
+            # Nothing outside an @mention, a reply or an open conversation is read or stored.
+            logger.info("Group message ignored: no @mention, not a reply to the bot, no open conversation")
+            return
         question = re.sub(f"@{re.escape(me.username or '')}", "", text, flags=re.I).strip()
 
         images: list[tuple[bytes, str]] = []
@@ -454,6 +456,7 @@ class TelegramBot:
         answer = await ask_claude(question, self.db, user_name=update.effective_user.first_name or "",
                                   images=images, ambient=(mode == "ambient"), quoted=quoted)
         if not answer.text:
+            logger.info("Group message read during an open conversation; the model stayed silent")
             return  # an unaddressed message that was not for the bot
         self._last_answer_at = time.time()
         await msg.reply_text(answer.text)

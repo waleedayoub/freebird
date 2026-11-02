@@ -212,3 +212,56 @@ def test_bot_remembers_and_stays_quiet_when_not_addressed(db, monkeypatch):
     last = seen[-1]
     assert last[0] == {"role": "user", "content": "Waleed: what visited?"}
     assert last[1]["content"] == "It was a cardinal." and last[-1]["content"].startswith("Marissa: was it")
+
+
+def _fake_update(text="", *, chat_type="group", chat_id=None, reply_to_bot=False, user="Marissa", photo=None):
+    """A stand-in for a Telegram group message; records what the bot sends back."""
+    from types import SimpleNamespace
+    sent = []
+
+    async def reply_text(t): sent.append(("text", t))
+    async def noop(*a, **k): pass
+
+    reply = SimpleNamespace(from_user=SimpleNamespace(id=99 if reply_to_bot else 5), text="NEW LIFER: Purple Finch!",
+                            caption=None, photo=None) if reply_to_bot or text == "REPLY" else None
+    msg = SimpleNamespace(text=text, caption=None, photo=[photo] if photo else None, reply_to_message=reply,
+                          reply_text=reply_text, reply_chat_action=noop)
+    import freebird.bot.telegram as tg
+    chat = SimpleNamespace(id=int(chat_id or tg.TELEGRAM_CHAT_ID), type=chat_type)
+    return SimpleNamespace(message=msg, effective_chat=chat, effective_user=SimpleNamespace(first_name=user)), sent
+
+
+def test_bot_handler_routes_group_messages(db, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import freebird.bot.telegram as tg
+    from freebird.bot.claude import Answer
+
+    calls = []
+
+    async def fake_ask(question, db, user_name="", images=None, ambient=False, quoted=""):
+        calls.append({"q": question, "who": user_name, "ambient": ambient, "quoted": quoted, "images": len(images or [])})
+        return Answer("" if question == "dinner?" else f"re: {question}")
+
+    async def get_me(): return SimpleNamespace(id=99, username="freeeebird_bot")
+
+    monkeypatch.setattr(tg, "ask_claude", fake_ask)
+    bot = object.__new__(tg.TelegramBot)
+    bot.db, bot.app, bot._last_answer_at = db, SimpleNamespace(bot=SimpleNamespace(get_me=get_me)), 0.0
+
+    def send(*a, **k):
+        u, sent = _fake_update(*a, **k)
+        asyncio.run(bot._answer(u, u.message.text or ""))
+        return sent
+
+    assert send("any birds today?") == [] and not calls  # not addressed, no open conversation: ignored unread
+    assert send("@freeeebird_bot any birds today?") == [("text", "re: any birds today?")]  # mention stripped
+    assert calls[-1]["ambient"] is False and calls[-1]["who"] == "Marissa"
+    assert send("and yesterday?") == [("text", "re: and yesterday?")]  # inside the window, no @ needed
+    assert calls[-1]["ambient"] is True
+    assert send("dinner?") == []  # the model said it was not for it
+    bot._last_answer_at = 0.0
+    assert send("is that real?", reply_to_bot=True) == [("text", "re: is that real?")]  # reply to the bot, no @
+    assert calls[-1]["quoted"] == "NEW LIFER: Purple Finch!"
+    assert send("hello", chat_id=-12345) == []  # a different chat is never answered
+    assert send("hi", chat_type="private") == [("text", "re: hi")]
