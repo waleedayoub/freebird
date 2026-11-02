@@ -69,7 +69,8 @@ Tools for comparing vision model accuracy against human-labeled ground truth.
 ### Label images
 
 ```bash
-uv run python -m freebird.eval_label      # Labeling web UI at localhost:8000 (--set sample by default)
+uv run python -m freebird.eval_label      # Labeling web UI at localhost:8000 (--set sample by default; --presence = no species)
+uv run python -m freebird.eval_jury       # Score models against a jury of the best models (--make-check exports photos for an outside check)
 ```
 
 Web UI shows each keyshot image alongside a form to label it as bird (with species), critter, or empty. Labels save to `eval/ground_truth.json`.
@@ -116,6 +117,7 @@ src/freebird/
     telegram.py        # Telegram bot commands + notifications
     claude.py          # Claude Q&A chatbot
   eval_label.py        # Labeling web UI (FastAPI)
+  eval_jury.py         # Jury-based model scoring when there are no expert labels
   eval_run.py          # Eval runner (pydantic-evals)
   vision_backfill.py   # Batch re-analysis script
 eval/

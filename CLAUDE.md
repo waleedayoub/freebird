@@ -40,7 +40,8 @@ src/freebird/
   bot/
     telegram.py        # python-telegram-bot handlers + notification methods
     claude.py          # Anthropic API for freeform Q&A
-  eval_label.py        # The one labeling web UI (FastAPI): contested-first, species buttons, undo
+  eval_label.py        # The one labeling web UI (FastAPI): clear birds first, species buttons, undo, --presence mode
+  eval_jury.py         # Scores models against a jury of the best models (no expert labels needed)
   eval_run.py          # Eval runner: pydantic-evals harness with IsBirdCorrect + SpeciesMatch
   vision_backfill.py   # Batch re-analysis of historical images
 eval/
@@ -82,12 +83,12 @@ eval/
 
 ## Eval Framework
 
-- `eval_label.py`: the single labeling UI. `uv run python -m freebird.eval_label [--set sample]` then open `localhost:8000`. Labels a named set (`eval/sets/<set>.json`) and saves to `eval/sets/<set>_gold.json` (legacy `ground_truth` saves to `eval/ground_truth.json`). If model runs exist for the set, the most contested images come first with the models' species as buttons.
+- `eval_label.py`: the single labeling UI. `uv run python -m freebird.eval_label [--set sample]` then open `localhost:8000`. Labels a named set (`eval/sets/<set>.json`) and saves to `eval/sets/<set>_gold.json` (legacy `ground_truth` saves to `eval/ground_truth.json`). If model runs exist for the set, clear birds come first (most contested first), then empties, then hard views (tail only, cropped, blurry) with the models' species as buttons. `--presence` hides species: only bird / empty / critter / unsure, for labelers who cannot tell species apart.
 - `eval_run.py`: pydantic-evals harness. Evaluators: `IsBirdCorrect` (bird vs non-bird) and `SpeciesMatch` (species/animal_type).
 - `SpeciesMatch` logic: empty frames check `animal_type is None`, birds use case-insensitive species match, non-birds use case-insensitive containment (e.g., "squirrel" matches `animal_type: "squirrel"` or `species: "Eastern Gray Squirrel"`).
 - Unlabeled birds (`is_bird: true`, `label: ""`) are skipped during dataset construction.
 - Results append to `eval/results.jsonl`; per-case details write to `eval/details/`.
-- **Multi-model evals (Oct 2026):** `eval_compare.py` runs many models over a set (resumable, writes `eval/runs/<set>/<prompt>/<model>.jsonl`); `eval_score.py` scores against gold labels (`--gold`) or by agreement, and prints cost per image; `eval/sets/sample.json` is a 381-image stratified set labeled with `eval_label`. The 115-image set above is mostly juncos, squirrels and empty frames, so it overstates accuracy.
+- **Multi-model evals (Oct 2026):** `eval_compare.py` runs many models over a set (resumable, writes `eval/runs/<set>/<prompt>/<model>.jsonl`); `eval_score.py` scores against gold labels (`--gold`) or by agreement, and prints cost per image; `eval/sets/sample.json` is a 381-image stratified set. The owner is not a bird expert, so species answers come from a jury of the five strongest models: `eval_jury.py` scores every model against the other jurors (leave-one-out, 75% must agree, hard views excluded), human bird/empty labels from `eval_label --presence` override it, and `eval_jury --make-check` exports ~35 photos (the ones the jury splits on plus a random 15 it agrees on) to `eval/work/merlin_check/` for an outside check in the Merlin app, typed in with `eval_label --set sample_check`. The 115-image set above is mostly juncos, squirrels and empty frames, so it overstates accuracy.
 
 ### Model Accuracy (115 labeled images)
 

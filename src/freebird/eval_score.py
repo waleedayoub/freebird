@@ -3,6 +3,7 @@
   uv run python -m freebird.eval_score --set ground_truth      # accuracy vs hand labels
   uv run python -m freebird.eval_score --set sample            # agreement / consensus (no labels)
   uv run python -m freebird.eval_score --set sample --gold eval/sets/sample_gold.json
+For sets without expert labels use the model jury instead: uv run python -m freebird.eval_jury
 """
 from __future__ import annotations
 
@@ -23,6 +24,31 @@ def klass(pred: dict) -> str:
         return "bird:" + (norm_species(pred.get("species")) or "unknown")
     at = norm_species(pred.get("animal_type"))
     return f"animal:{at}" if at else "empty"
+
+
+# Words models use when the bird is not really identifiable (tail only, cropped, blurry).
+POOR_VIEW = re.compile(
+    r"\b(tail|blur\w*|partial\w*|cropped|cut off|out of frame|edge of (the )?frame|from behind|"
+    r"back of|rear view|obscured|motion|indistinct|unidentifiable|too (small|far|dark))\b", re.I)
+
+
+def poor_view(pred: dict) -> bool:
+    """True when this model call says the photo is a poor view of a bird."""
+    if not pred.get("is_bird"):
+        return False
+    text = " ".join(str(pred.get(k) or "") for k in ("notable", "behavior"))
+    return (pred.get("confidence") == "low" or norm_species(pred.get("species")) == "unknown"
+            or bool(POOR_VIEW.search(text)))
+
+
+def view_tier(preds: list[dict]) -> int:
+    """0 = clear enough bird, 1 = models say empty or non-bird, 2 = hard view (tail, cropped, blurry)."""
+    birds = [p for p in preds if p["is_bird"]]
+    if not preds:
+        return 0
+    if not birds:
+        return 1
+    return 2 if sum(poor_view(p) for p in birds) / len(birds) >= 0.5 else 0
 
 
 def load_runs(set_name: str, prompt: str) -> dict[str, dict[str, dict]]:
@@ -48,11 +74,11 @@ def expected_class(label: dict) -> str:
 def score_gold(runs, gold: dict[str, dict]) -> None:
     print(f"{'model':42} {'n':>4} {'err':>3} {'bird/not':>8} {'class':>7} {'species*':>8} {'sec':>5} {'in_tok':>6} {'out_tok':>7}")
     for name, recs in runs.items():
-        n = ok_bird = ok_class = sp_n = sp_ok = errs = 0
+        n = n_cls = ok_bird = ok_class = sp_n = sp_ok = errs = 0
         secs = []; it = []; ot = []
         for sid, lab in gold.items():
-            if lab.get("unsure") or (lab["is_bird"] and not lab["label"]):
-                continue  # unsure, or an unlabeled bird
+            if lab.get("unsure"):
+                continue
             r = recs.get(sid)
             if r is None:
                 continue
@@ -62,13 +88,15 @@ def score_gold(runs, gold: dict[str, dict]) -> None:
             n += 1
             p = r["pred"]
             ok_bird += p["is_bird"] == lab["is_bird"]
-            ok_class += klass(p) == expected_class(lab)
-            if lab["is_bird"]:
-                sp_n += 1
-                sp_ok += klass(p) == expected_class(lab)
+            if not (lab["is_bird"] and not lab["label"]):  # a bird without a species counts for bird/not only
+                n_cls += 1
+                ok_class += klass(p) == expected_class(lab)
+                if lab["is_bird"]:
+                    sp_n += 1
+                    sp_ok += klass(p) == expected_class(lab)
             secs.append(r["secs"]); it.append(r.get("in_tok") or 0); ot.append(r.get("out_tok") or 0)
         if n:
-            print(f"{name:42} {n:4} {errs:3} {100*ok_bird/n:7.1f}% {100*ok_class/n:6.1f}% "
+            print(f"{name:42} {n:4} {errs:3} {100*ok_bird/n:7.1f}% {(100*ok_class/n_cls if n_cls else 0):6.1f}% "
                   f"{(100*sp_ok/sp_n if sp_n else 0):7.1f}% {sum(secs)/n:5.1f} {sum(it)/n:6.0f} {sum(ot)/n:7.0f}")
     print("* species* = accuracy on images whose label is a bird species")
 
@@ -108,18 +136,25 @@ PRICES = {
 }
 
 
+def cost_per_image(name: str, recs: dict[str, dict]) -> tuple[float, float, float] | None:
+    """(avg input tokens, avg output tokens, USD per image) from real token use; None if unknown."""
+    ok = [r for r in recs.values() if not r.get("error") and r.get("in_tok")]
+    if not ok or name not in PRICES:
+        return None
+    pin, pout = PRICES[name]
+    it = sum(r["in_tok"] for r in ok) / len(ok)
+    ot = sum(r.get("out_tok") or 0 for r in ok) / len(ok)
+    return it, ot, (it * pin + ot * pout) / 1e6
+
+
 def score_cost(runs, events_per_month: int = 3000) -> None:
     """Average real token use per image x list price. Thinking tokens bill as output."""
     print(f"\n{'model':42} {'in_tok':>6} {'out_tok':>7} {'$/1k imgs':>10} {'$/mo @' + str(events_per_month):>12}")
     for name, recs in runs.items():
-        ok = [r for r in recs.values() if not r.get("error") and r.get("in_tok")]
-        if not ok or name not in PRICES:
-            continue
-        pin, pout = PRICES[name]
-        it = sum(r["in_tok"] for r in ok) / len(ok)
-        ot = sum(r.get("out_tok") or 0 for r in ok) / len(ok)
-        per = (it * pin + ot * pout) / 1e6
-        print(f"{name:42} {it:6.0f} {ot:7.0f} {1000 * per:10.2f} {events_per_month * per:12.2f}")
+        c = cost_per_image(name, recs)
+        if c:
+            it, ot, per = c
+            print(f"{name:42} {it:6.0f} {ot:7.0f} {1000 * per:10.2f} {events_per_month * per:12.2f}")
 
 
 def main() -> None:
