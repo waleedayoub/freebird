@@ -114,6 +114,10 @@ class Database:
         if "role" not in cols:
             self.conn.execute("ALTER TABLE vision_analyses ADD COLUMN role TEXT DEFAULT 'primary'")
             self.conn.commit()
+        ccols = {r["name"] for r in self.conn.execute("PRAGMA table_info(conversations)")}
+        if "refs" not in ccols:  # sightings the bot looked up, so follow-ups like "show me that one" work
+            self.conn.execute("ALTER TABLE conversations ADD COLUMN refs TEXT")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -408,14 +412,25 @@ class Database:
         response: str,
         model: str,
         error: str | None = None,
+        refs: str = "",
     ) -> None:
         self.conn.execute(
             """INSERT INTO conversations
-               (user_name, question, context, response, model, error)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_name, question, context, response, model, error),
+               (user_name, question, context, response, model, error, refs)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_name, question, context, response, model, error, refs),
         )
         self.conn.commit()
+
+    def recent_conversations(self, hours: float = 12, limit: int = 20) -> list[sqlite3.Row]:
+        """The latest answered exchanges, oldest first, so they can be replayed as chat history."""
+        rows = self.conn.execute(
+            """SELECT user_name, question, response, refs FROM conversations
+               WHERE error IS NULL AND response != '' AND created_at >= datetime('now', ?)
+               ORDER BY id DESC LIMIT ?""",
+            (f"-{hours} hours", limit),
+        ).fetchall()
+        return rows[::-1]
 
     @staticmethod
     def _row_to_sighting(row: sqlite3.Row) -> Sighting:

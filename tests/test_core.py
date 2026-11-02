@@ -145,3 +145,70 @@ def test_qa_tools_see_squirrels_not_just_birds(db):
     assert counts["other_animals"] == [{"animal": "squirrel", "visits": 1}]
     assert [s["species"] for s in counts["species"]] == ["Northern Cardinal"]
     assert json.loads(run_tool("get_sighting", {"sighting_id": sq}, db, []))["animal"] == "squirrel"
+
+
+def test_group_chat_addressing():
+    from freebird.bot.telegram import how_addressed
+    ha = lambda **k: how_addressed(**{"chat_type": "supergroup", "text": "hi", "bot_username": "FreeBirdBot",
+                                      "replied_to_bot": False, "last_answer_at": 0.0, "now": 1000.0, **k})
+    assert ha(chat_type="private") == "direct"
+    assert ha(text="what's new @freebirdbot") == "direct"
+    assert ha(replied_to_bot=True) == "direct"
+    assert ha() is None  # ordinary chat is ignored
+    assert ha(last_answer_at=800.0) == "ambient"  # 200s after the bot answered
+    assert ha(last_answer_at=600.0) is None  # window (300s) has closed
+
+
+def test_conversation_history_is_recent_answered_and_ordered(db):
+    for i, (q, a, err) in enumerate([("first?", "one", None), ("broken?", "", "boom"), ("second?", "two", None)]):
+        db.log_conversation("Waleed", q, "", a, "m", error=err, refs="abc (Cardinal, 2026-10-23)" if i == 2 else "")
+    db.conn.execute("INSERT INTO conversations (user_name, question, response, created_at) "
+                    "VALUES ('Marissa', 'ancient?', 'old', datetime('now', '-30 hours'))")
+    db.conn.commit()
+    rows = db.recent_conversations(hours=12, limit=20)
+    assert [r["question"] for r in rows] == ["first?", "second?"]
+    from freebird.bot.claude import _history
+    h = _history(db)
+    assert [m["role"] for m in h] == ["user", "assistant", "user", "assistant"]
+    assert h[0]["content"] == "Waleed: first?"
+    assert "abc (Cardinal" in h[3]["content"]  # ids the bot looked up ride along for follow-ups
+
+
+def test_view_sighting_returns_the_photo(db, tmp_path):
+    img = tmp_path / "k.jpg"
+    img.write_bytes(b"\xff\xd8fakejpeg")
+    sid = db.insert_sighting("v1", datetime.now(timezone.utc).timestamp(), "cam", str(img))
+    out = run_tool("view_sighting", {"sighting_id": sid}, db, [])
+    assert out[0]["type"] == "image" and out[0]["source"]["media_type"] == "image/jpeg"
+    assert json.loads(out[1]["text"])["id"] == sid
+    missing = db.insert_sighting("v2", datetime.now(timezone.utc).timestamp(), "cam", str(tmp_path / "gone.jpg"))
+    assert "no photo" in run_tool("view_sighting", {"sighting_id": missing}, db, [])
+
+
+def test_bot_remembers_and_stays_quiet_when_not_addressed(db, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import anthropic
+    from freebird.bot import claude as qa
+
+    seen, replies = [], iter(["It was a cardinal.", "NO_REPLY", "Yes, the same one."])
+
+    class Stub:
+        def __init__(self, **kw):
+            self.messages = self
+
+        async def create(self, **kw):
+            seen.append(kw["messages"])
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=next(replies))])
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", Stub)
+    monkeypatch.setattr(qa, "ANTHROPIC_API_KEY", "k")
+    a = asyncio.run(qa.ask_claude("what visited?", db, "Waleed"))
+    assert a.text == "It was a cardinal."
+    quiet = asyncio.run(qa.ask_claude("anyway, dinner at 7?", db, "Marissa", ambient=True))
+    assert quiet.text == "" and len(db.recent_conversations()) == 1  # NO_REPLY is not stored
+    b = asyncio.run(qa.ask_claude("was it the same one as Tuesday?", db, "Marissa", ambient=True))
+    assert b.text == "Yes, the same one."
+    last = seen[-1]
+    assert last[0] == {"role": "user", "content": "Waleed: what visited?"}
+    assert last[1]["content"] == "It was a cardinal." and last[-1]["content"].startswith("Marissa: was it")

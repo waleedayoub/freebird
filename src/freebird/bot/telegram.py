@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from pathlib import Path
 
 from freebird.config import format_local_time, local_today
@@ -21,12 +23,27 @@ from freebird.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
+CONVERSATION_WINDOW = 300  # seconds after the bot's last answer during which it reads unaddressed messages
+
+
+def how_addressed(chat_type: str, text: str, bot_username: str, replied_to_bot: bool,
+                  last_answer_at: float, now: float) -> str | None:
+    """'direct' when the message is for the bot (private chat, @mention or a reply to it), 'ambient'
+    during an open conversation (the model may stay silent), else None, and the message is ignored."""
+    if chat_type not in ("group", "supergroup"):
+        return "direct"
+    if replied_to_bot or f"@{bot_username}".lower() in text.lower():
+        return "direct"
+    if last_answer_at and now - last_answer_at < CONVERSATION_WINDOW:
+        return "ambient"
+    return None
+
 
 class TelegramBot:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        self._last_exchange = ""  # last question and answer, passed to Q&A for follow-ups
+        self._last_answer_at = 0.0  # when the bot last answered a question; opens the conversation window
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -44,6 +61,7 @@ class TelegramBot:
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_freeform)
         )
+        self.app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
 
     # -- Notification methods (called by pipeline / scheduler) --
 
@@ -398,34 +416,52 @@ class TelegramBot:
     async def _handle_freeform(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        await self._answer(update, update.message.text or "")
+
+    async def _handle_photo(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._answer(update, update.message.caption or "", photo=update.message.photo[-1])
+
+    async def _answer(self, update: Update, text: str, photo=None) -> None:
+        """Answer a chat message (and photo) when it is for the bot; ignore it otherwise."""
+        msg = update.message
         # Only respond to messages from the configured chat
-        if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
+        if msg is None or str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
             return
+        me = await self.app.bot.get_me()
+        replied = msg.reply_to_message
+        replied_to_bot = bool(replied and replied.from_user and replied.from_user.id == me.id)
+        mode = how_addressed(update.effective_chat.type, text, me.username or "", replied_to_bot,
+                             self._last_answer_at, time.time())
+        if mode is None:
+            return  # nothing outside an @mention, a reply or an open conversation is read or stored
+        question = re.sub(f"@{re.escape(me.username or '')}", "", text, flags=re.I).strip()
 
-        # In group chats, only respond when the bot is mentioned
-        text = update.message.text or ""
-        bot_username = (await self.app.bot.get_me()).username
-        if update.effective_chat.type in ("group", "supergroup"):
-            if f"@{bot_username}" not in text:
-                return
-            # Strip the mention from the question
-            question = text.replace(f"@{bot_username}", "").strip()
-        else:
-            question = text
-
+        images: list[tuple[bytes, str]] = []
+        for p in (photo, replied.photo[-1] if replied and replied.photo else None):
+            if p is not None:
+                images.append((bytes(await (await p.get_file()).download_as_bytearray()), "image/jpeg"))
+        if images and not question:
+            question = ("What bird or animal is in this photo?" if mode == "direct"
+                        else "(sent a photo with no caption)")
         if not question:
             return
+        quoted = (replied.text or replied.caption or "") if replied else ""
 
-        user_name = update.effective_user.first_name or ""
-        await update.message.reply_chat_action("typing")
-        answer = await ask_claude(question, self.db, user_name=user_name, previous=self._last_exchange)
-        await update.message.reply_text(answer.text)
-        self._last_exchange = f"Q: {question}\nA: {answer.text}"[:1500]
+        if mode == "direct":
+            await msg.reply_chat_action("typing")
+        answer = await ask_claude(question, self.db, user_name=update.effective_user.first_name or "",
+                                  images=images, ambient=(mode == "ambient"), quoted=quoted)
+        if not answer.text:
+            return  # an unaddressed message that was not for the bot
+        self._last_answer_at = time.time()
+        await msg.reply_text(answer.text)
         for path, kind in answer.media:
             try:
                 if kind == "video":
-                    await update.message.reply_video(video=path.open("rb"))
+                    await msg.reply_video(video=path.open("rb"))
                 else:
-                    await update.message.reply_photo(photo=path.open("rb"))
+                    await msg.reply_photo(photo=path.open("rb"))
             except Exception:
                 logger.exception("Failed to send %s", path)

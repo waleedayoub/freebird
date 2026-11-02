@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass, field
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 8
 MAX_ROWS = 50
+HISTORY_HOURS = 12      # how far back the conversation is replayed to the model
+HISTORY_EXCHANGES = 20  # and at most this many question/answer pairs
+NO_REPLY = "NO_REPLY"   # what the model says when an unaddressed chat message is not for it
+IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 SYSTEM_PROMPT = """\
 You are FreeBird, a friendly bird-watching assistant for one backyard feeder camera in {location}.
@@ -28,8 +33,20 @@ wrong (look-alike finches and sparrows are the usual mix-ups); mention that brie
 for example when someone asks about a rare bird. A sighting with a human confirmation is reliable.
 If the database has nothing, say so, then offer general bird knowledge if it helps.
 
-When someone asks to see a bird, call send_media with the sighting id. Keep answers short and
-warm, plain text only (no markdown), and under about 120 words unless asked for more."""
+When someone asks to see a bird, call send_media with the sighting id. To check or describe what the
+camera saw, call view_sighting and look at the photo yourself; the stored species comes from a cheaper
+model, so give your own read and say how sure you are. If someone sends you a photo, look at it the same way.
+Ignore the date and time printed in the corner of camera photos; use the database for times.
+
+Waleed and Marissa both use this chat. Each message starts with the speaker's name. The earlier turns of
+this conversation are above, so follow-ups like "show me that one" or "and last week?" refer to them;
+sighting ids you looked up earlier are noted in brackets. Keep answers short and warm, plain text only
+(no markdown), and under about 120 words unless asked for more."""
+
+AMBIENT_NOTE = (
+    "\n\nThe latest message was sent in the family chat without mentioning you. Reply only if it is "
+    "clearly a question or request for you (about the feeder, a bird, a photo, or a follow-up to what you "
+    f"just said). Otherwise reply with exactly {NO_REPLY} and nothing else. When unsure, reply {NO_REPLY}.")
 
 TOOLS = [
     {
@@ -75,6 +92,16 @@ TOOLS = [
         "name": "get_sighting",
         "description": "Full details for one sighting id: species, alternatives considered, behavior, "
                        "notes, whether a human confirmed it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"sighting_id": {"type": "string"}},
+            "required": ["sighting_id"],
+        },
+    },
+    {
+        "name": "view_sighting",
+        "description": "Look at the camera photo of a sighting. Use it to check or describe what a bird "
+                       "looks like or is doing, or to give your own species read.",
         "input_schema": {
             "type": "object",
             "properties": {"sighting_id": {"type": "string"}},
@@ -137,7 +164,8 @@ def _sighting_row(r) -> dict:
     return row
 
 
-def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]]) -> str:
+def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]]) -> str | list[dict]:
+    """Run one tool. Returns JSON text, or content blocks (a photo plus text) for view_sighting."""
     c = db.conn
     if name == "search_sightings":
         where, params = _range_sql(args)
@@ -206,6 +234,21 @@ def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]])
             "human_confirmed": label["label"] if label else None,
         })
 
+    if name == "view_sighting":
+        s = db.get_sighting(args["sighting_id"])
+        if not s:
+            return json.dumps({"error": "no such sighting"})
+        p = Path(s.image_path) if s.image_path else None
+        if not p or not p.exists():
+            return json.dumps({"error": "no photo saved for this sighting"})
+        info = {"id": s.id, "when": format_local_time(s.timestamp, "%Y-%m-%d %H:%M"),
+                "stored_species": s.species, "stored_confidence": s.confidence}
+        return [
+            {"type": "image", "source": {"type": "base64", "media_type": IMAGE_TYPES.get(p.suffix.lower(), "image/jpeg"),
+                                         "data": base64.standard_b64encode(p.read_bytes()).decode()}},
+            {"type": "text", "text": json.dumps(info)},
+        ]
+
     if name == "send_media":
         s = db.get_sighting(args["sighting_id"])
         if not s:
@@ -220,7 +263,43 @@ def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]])
     return json.dumps({"error": f"unknown tool {name}"})
 
 
-async def ask_claude(question: str, db: Database, user_name: str = "", previous: str = "") -> Answer:
+def _history(db: Database) -> list[dict]:
+    """Earlier exchanges in this chat as alternating user/assistant turns (text only)."""
+    msgs: list[dict] = []
+    for r in db.recent_conversations(HISTORY_HOURS, HISTORY_EXCHANGES):
+        msgs.append({"role": "user", "content": f"{r['user_name'] or 'Someone'}: {r['question']}"})
+        reply = r["response"] + (f"\n[sightings I looked up: {r['refs']}]" if r["refs"] else "")
+        msgs.append({"role": "assistant", "content": reply})
+    return msgs
+
+
+def _note_refs(name: str, args: dict, out: str | list[dict], refs: dict[str, str]) -> None:
+    """Remember which sightings a tool call touched so a follow-up can point at them."""
+    try:
+        if name in ("view_sighting", "send_media") and args.get("sighting_id"):
+            refs.setdefault(args["sighting_id"], "")
+        d = json.loads(out) if isinstance(out, str) else {}
+        for row in d.get("shown", []):
+            refs[row["id"]] = f"{row.get('species') or row.get('animal')}, {row['when']}"
+        if name == "get_sighting" and d.get("id"):
+            refs[d["id"]] = f"{d.get('species') or d.get('animal')}, {d['when']}"
+    except (ValueError, KeyError, TypeError, AttributeError):
+        pass
+
+
+async def ask_claude(
+    question: str,
+    db: Database,
+    user_name: str = "",
+    images: list[tuple[bytes, str]] | None = None,
+    ambient: bool = False,
+    quoted: str = "",
+) -> Answer:
+    """Answer one chat message, with the recent conversation as memory.
+
+    `images` are photos the person sent, as (bytes, media_type). `ambient` means nobody addressed
+    the bot, so it may stay silent (Answer with empty text). `quoted` is the message being replied to.
+    """
     if not ANTHROPIC_API_KEY:
         return Answer("Claude Q&A is not configured. Set ANTHROPIC_API_KEY in .env")
 
@@ -228,10 +307,19 @@ async def ask_claude(question: str, db: Database, user_name: str = "", previous:
 
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     system = SYSTEM_PROMPT.format(location=FEEDER_LOCATION, today=local_today(), tz=str(TIMEZONE))
-    content = f"Previous exchange (for follow-ups):\n{previous}\n\nQuestion: {question}" if previous else question
-    messages: list[dict] = [{"role": "user", "content": content}]
+    if ambient:
+        system += AMBIENT_NOTE
+    text = f"{user_name or 'Someone'}: {question}"
+    if quoted:
+        text += f"\n(replying to this earlier message: {quoted[:500]})"
+    blocks: list[dict] = [{"type": "image", "source": {"type": "base64", "media_type": mt,
+                                                       "data": base64.standard_b64encode(b).decode()}}
+                          for b, mt in (images or [])]
+    messages: list[dict] = _history(db) + [
+        {"role": "user", "content": [*blocks, {"type": "text", "text": text}] if blocks else text}]
     media: list[tuple[Path, str]] = []
     transcript: list[str] = []
+    refs: dict[str, str] = {}
 
     try:
         for _ in range(MAX_TOOL_ROUNDS):
@@ -240,11 +328,11 @@ async def ask_claude(question: str, db: Database, user_name: str = "", previous:
                 extra_body={"output_config": {"effort": "low"}},
             )
             if resp.stop_reason == "refusal":
-                text = "Sorry, I can't help with that one."
+                reply = "Sorry, I can't help with that one."
                 break
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if resp.stop_reason != "tool_use" or not tool_uses:
-                text = "".join(b.text for b in resp.content if b.type == "text").strip()
+                reply = "".join(b.text for b in resp.content if b.type == "text").strip()
                 break
             messages.append({"role": "assistant", "content": resp.content})
             results = []
@@ -254,14 +342,18 @@ async def ask_claude(question: str, db: Database, user_name: str = "", previous:
                 except Exception as e:  # noqa: BLE001 -- report to the model, don't crash the bot
                     logger.exception("Tool %s failed", tu.name)
                     out = json.dumps({"error": str(e)})
+                _note_refs(tu.name, tu.input, out, refs)
                 transcript.append(f"{tu.name}({json.dumps(tu.input)})")
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
             messages.append({"role": "user", "content": results})
         else:
-            text = "That took too many steps. Could you ask it more simply?"
-        text = text or "I couldn't come up with an answer."
-        db.log_conversation(user_name, question, "; ".join(transcript), text, QA_MODEL)
-        return Answer(text, media)
+            reply = "That took too many steps. Could you ask it more simply?"
+        if ambient and reply.strip().startswith(NO_REPLY):
+            return Answer("")  # not for the bot: say nothing and keep no record of the message
+        reply = reply or "I couldn't come up with an answer."
+        shown = "; ".join(f"{k} ({v})" if v else k for k, v in list(refs.items())[-10:])
+        db.log_conversation(user_name, question, "; ".join(transcript), reply, QA_MODEL, refs=shown)
+        return Answer(reply, media)
     except Exception as e:  # noqa: BLE001
         logger.exception("Claude API error")
         db.log_conversation(user_name, question, "; ".join(transcript), "", QA_MODEL, error=str(e))

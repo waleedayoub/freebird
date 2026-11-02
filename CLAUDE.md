@@ -79,7 +79,7 @@ eval/
 - Prompts: `default_v3.txt` adds naming rules and look-alike guidance; `default_v4.txt` requires a best guess instead of "Unidentified bird".
 - `feeder.py` sends a daily 10:00 nudge when bird visits fall to under 25% of the prior two weeks. `/refilled` silences it for 4 days. State lives in the `kv` table.
 - Polling catches up to 48 h after an outage (`kv.last_poll_ok`).
-- Q&A (`bot/claude.py`) uses `QA_MODEL` (default `claude-sonnet-5-5`) with DB tools (search_sightings, species_counts, daily_activity, get_sighting, send_media). The tools also cover non-bird animals (squirrels, raccoons, people: `animal_type` on the primary vision row, shown as `animal` / `other_animals`).
+- Q&A (`bot/claude.py`) uses `QA_MODEL` (default `claude-sonnet-5-5`) with DB tools (search_sightings, species_counts, daily_activity, get_sighting, send_media). `view_sighting` shows the model the camera photo itself (Sonnet 5.5 can see), and photos sent in chat (or the photo being replied to) go to it as images. Memory: every answered exchange is stored in `conversations` and the last 12 hours (up to 20 exchanges) are replayed as chat history, with the ids of sightings it looked up. In the group chat the bot answers on @mention, on a reply to one of its messages, and for 5 minutes after its last answer without any @ (it says `NO_REPLY` and stores nothing when the message is not for it); the last needs the bot's Group Privacy turned OFF in BotFather. The tools also cover non-bird animals (squirrels, raccoons, people: `animal_type` on the primary vision row, shown as `animal` / `other_animals`).
 
 ## Eval Framework
 
