@@ -130,3 +130,18 @@ def test_uncommon_species_get_reviewed_even_if_seen_before(db, tmp_path, monkeyp
     assert db.is_uncommon("Purple Finch") and not db.is_uncommon("House Sparrow")
     r, called = _analyze(monkeypatch, db, tmp_path, _bird("Purple Finch"), _bird("Northern Cardinal"))
     assert called == ["p", "r"] and r.species == "Northern Cardinal"
+
+
+def test_qa_tools_see_squirrels_not_just_birds(db):
+    now = datetime.now(timezone.utc)
+    add(db, "b1", "Northern Cardinal", now)
+    sq = db.insert_sighting("s1", now.timestamp(), "cam", None)  # a squirrel: no species, animal in the vision row
+    db.insert_vision_analysis(sighting_id=sq, is_bird=False, species=None, species_latin=None, confidence=None,
+                              animal_type="squirrel", count=1, sex=None, age=None, behavior=None, notable=None,
+                              raw_response="{}", model="m")
+    found = json.loads(run_tool("search_sightings", {"species": "squirrel"}, db, []))
+    assert found["total_matches"] == 1 and found["shown"][0]["animal"] == "squirrel"
+    counts = json.loads(run_tool("species_counts", {}, db, []))
+    assert counts["other_animals"] == [{"animal": "squirrel", "visits": 1}]
+    assert [s["species"] for s in counts["species"]] == ["Northern Cardinal"]
+    assert json.loads(run_tool("get_sighting", {"sighting_id": sq}, db, []))["animal"] == "squirrel"

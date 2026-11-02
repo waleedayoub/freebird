@@ -22,7 +22,8 @@ You are FreeBird, a friendly bird-watching assistant for one backyard feeder cam
 Today is {today} (timezone {tz}). All dates and times you read or write are local time.
 
 Use the tools to look up facts in the sighting database. Never guess counts, dates or species
-from memory. Species were identified from camera stills by an AI model, so they are sometimes
+from memory. The camera also catches non-birds (squirrels, raccoons, cats, insects, people); the
+tools list those as animals, so search them before saying the feeder has no data on one. Species were identified from camera stills by an AI model, so they are sometimes
 wrong (look-alike finches and sparrows are the usual mix-ups); mention that briefly when it matters,
 for example when someone asks about a rare bird. A sighting with a human confirmation is reliable.
 If the database has nothing, say so, then offer general bird knowledge if it helps.
@@ -33,9 +34,9 @@ warm, plain text only (no markdown), and under about 120 words unless asked for 
 TOOLS = [
     {
         "name": "search_sightings",
-        "description": "List individual sightings, newest first. Filter by species name (partial, "
-                       "case-insensitive), local date range, or lifers only. Returns id, local time, "
-                       "species, confidence and the camera's behavior note.",
+        "description": "List individual sightings, newest first. Filter by species or animal name "
+                       "(partial, case-insensitive, e.g. 'cardinal' or 'squirrel'), local date range, or "
+                       "lifers only. Returns id, local time, species (or animal for non-birds) and confidence.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -49,8 +50,9 @@ TOOLS = [
     },
     {
         "name": "species_counts",
-        "description": "Visits per species between two local dates, with first and last seen. "
-                       "Use for 'what came by this week', 'how many X', 'most common bird'.",
+        "description": "Visits per bird species between two local dates, with first and last seen, plus "
+                       "a count of other animals (squirrel, raccoon, ...). Use for 'what came by this week', "
+                       "'how many X', 'most common bird'.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -119,12 +121,20 @@ def _range_sql(args: dict) -> tuple[str, list]:
     return "".join(f" AND {c}" for c in clauses), params
 
 
+# The non-bird animal the camera saw, from the sighting's primary vision row (NULL for birds).
+_ANIMAL = ("(SELECT v.animal_type FROM vision_analyses v WHERE v.sighting_id = s.id AND v.is_bird = 0 "
+           "AND v.animal_type IS NOT NULL AND v.role = 'primary' ORDER BY v.id DESC LIMIT 1)")
+
+
 def _sighting_row(r) -> dict:
-    return {
+    row = {
         "id": r["id"], "when": format_local_time(r["timestamp"], "%Y-%m-%d %H:%M"),
         "species": r["species"], "confidence": r["confidence"],
         "has_video": bool(r["video_path"]), "lifer": bool(r["is_lifer"]),
     }
+    if not r["species"] and r["animal"]:
+        row["animal"] = r["animal"]
+    return row
 
 
 def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]]) -> str:
@@ -132,16 +142,17 @@ def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]])
     if name == "search_sightings":
         where, params = _range_sql(args)
         if args.get("species"):
-            where += " AND (s.species LIKE ? OR s.species_latin LIKE ?)"
-            params += [f"%{args['species']}%"] * 2
+            where += " AND (s.species LIKE ? OR s.species_latin LIKE ? OR animal LIKE ?)"
+            params += [f"%{args['species']}%"] * 3
         if args.get("lifers_only"):
             where += " AND s.is_lifer = 1"
         limit = max(1, min(int(args.get("limit") or 10), MAX_ROWS))
         rows = c.execute(
-            f"SELECT s.* FROM sightings s WHERE s.species IS NOT NULL{where} "
+            f"SELECT s.*, {_ANIMAL} AS animal FROM sightings s WHERE (s.species IS NOT NULL OR animal IS NOT NULL){where} "
             "ORDER BY s.timestamp DESC LIMIT ?", [*params, limit]).fetchall()
         total = c.execute(
-            f"SELECT COUNT(*) FROM sightings s WHERE s.species IS NOT NULL{where}", params).fetchone()[0]
+            f"SELECT COUNT(*) FROM (SELECT s.id, {_ANIMAL} AS animal FROM sightings s "
+            f"WHERE (s.species IS NOT NULL OR animal IS NOT NULL){where})", params).fetchone()[0]
         return json.dumps({"total_matches": total, "shown": [_sighting_row(r) for r in rows]})
 
     if name == "species_counts":
@@ -162,7 +173,12 @@ def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]])
         for a in top:
             a["first"], a["last"] = (format_local_time(a["first"], "%Y-%m-%d"),
                                      format_local_time(a["last"], "%Y-%m-%d"))
-        return json.dumps({"species_total": len(agg), "species": top})
+        animals = c.execute(
+            f"SELECT animal, COUNT(*) AS visits FROM (SELECT s.id, {_ANIMAL} AS animal FROM sightings s "
+            f"WHERE s.species IS NULL{where}) WHERE animal IS NOT NULL GROUP BY animal ORDER BY visits DESC",
+            params).fetchall()
+        return json.dumps({"species_total": len(agg), "species": top,
+                           "other_animals": [dict(a) for a in animals]})
 
     if name == "daily_activity":
         days = max(1, min(int(args.get("days") or 14), 120))
@@ -182,7 +198,8 @@ def run_tool(name: str, args: dict, db: Database, media: list[tuple[Path, str]])
             "SELECT species, model FROM vision_analyses WHERE sighting_id = ? AND role = 'review'",
             (s.id,)).fetchall()
         return json.dumps({
-            **_sighting_row(c.execute("SELECT * FROM sightings WHERE id = ?", (s.id,)).fetchone()),
+            **_sighting_row(c.execute(f"SELECT s.*, {_ANIMAL} AS animal FROM sightings s WHERE s.id = ?",
+                                      (s.id,)).fetchone()),
             "latin": s.species_latin, "behavior": v.get("behavior"), "notable": v.get("notable"),
             "count": v.get("count"), "sex": v.get("sex"), "age": v.get("age"),
             "second_opinion": [dict(a) for a in alts],
