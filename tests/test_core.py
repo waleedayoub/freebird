@@ -73,3 +73,60 @@ def test_qa_tools_search_and_counts(db):
     counts = json.loads(run_tool("species_counts", {}, db, []))
     assert counts["species"][0]["species"] == "Northern Cardinal" and counts["species"][0]["visits"] == 2
     assert "error" in json.loads(run_tool("get_sighting", {"sighting_id": "nope"}, db, []))
+
+
+def _bird(species, confidence="high", alternatives=()):
+    from freebird.analysis.vision import VisionAnalysis
+    return VisionAnalysis(is_bird=True, species=species, confidence=confidence, alternatives=list(alternatives))
+
+
+def _analyze(monkeypatch, db, tmp_path, primary, reviewer):
+    """Run analyze_image with fake primary/reviewer answers; returns (result, models called)."""
+    import asyncio
+    from freebird.analysis import vision
+
+    monkeypatch.setattr(vision, "VISION_MODEL", "p")
+    monkeypatch.setattr(vision, "VISION_REVIEW_MODEL", "r")
+    called = []
+
+    async def fake(model, data, attempts=2):
+        called.append(model)
+        return primary if model == "p" else reviewer
+
+    monkeypatch.setattr(vision, "_run_model", fake)
+    img = tmp_path / "k.jpg"
+    img.write_bytes(b"x")
+    sid = db.insert_sighting("t", datetime.now(timezone.utc).timestamp(), "cam", None)
+    return asyncio.run(vision.analyze_image(img, sid, db)), called
+
+
+def test_reviewer_overrules_a_wrong_new_species(db, tmp_path, monkeypatch):
+    add(db, "a", "House Finch", datetime.now(timezone.utc))
+    r, called = _analyze(monkeypatch, db, tmp_path, _bird("Purple Finch", alternatives=["Cassin's Finch"]),
+                         _bird("House Finch"))
+    assert called == ["p", "r"]  # Purple Finch is a lifer candidate, so it was reviewed
+    assert r.species == "House Finch" and r.disputed and r.reviewed_by == "r"
+    assert "Purple Finch" in r.alternatives  # the primary's guess stays available as a choice
+    assert not db.is_lifer(r.species)
+
+
+def test_no_review_for_a_confident_known_species(db, tmp_path, monkeypatch):
+    add(db, "a", "House Finch", datetime.now(timezone.utc))
+    r, called = _analyze(monkeypatch, db, tmp_path, _bird("House Finch"), _bird("Purple Finch"))
+    assert called == ["p"] and r.species == "House Finch" and not r.disputed
+
+
+def test_low_confidence_gets_reviewed_and_agreement_is_quiet(db, tmp_path, monkeypatch):
+    add(db, "a", "House Finch", datetime.now(timezone.utc))
+    r, called = _analyze(monkeypatch, db, tmp_path, _bird("House Finch", confidence="low"), _bird("House Finch"))
+    assert called == ["p", "r"] and r.species == "House Finch" and not r.disputed
+
+
+def test_uncommon_species_get_reviewed_even_if_seen_before(db, tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    for i in range(400):
+        add(db, f"h{i}", "House Sparrow", now)
+    add(db, "p", "Purple Finch", now)  # seen once: under 1% of 401 sightings
+    assert db.is_uncommon("Purple Finch") and not db.is_uncommon("House Sparrow")
+    r, called = _analyze(monkeypatch, db, tmp_path, _bird("Purple Finch"), _bird("Northern Cardinal"))
+    assert called == ["p", "r"] and r.species == "Northern Cardinal"

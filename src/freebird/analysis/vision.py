@@ -111,12 +111,13 @@ def _store(db: Database, sighting_id: str, a: VisionAnalysis, model: str, role: 
     )
 
 
-def _merge_alternatives(primary: VisionAnalysis, review: VisionAnalysis | None) -> list[str]:
-    seen = {norm_species(primary.species)}
+def _merge_alternatives(final: str | None, chosen: VisionAnalysis, other: VisionAnalysis | None) -> list[str]:
+    """Up to 3 other plausible species: the winner's own alternatives, then the other model's answer."""
+    seen = {norm_species(final)}
     out: list[str] = []
-    cands = list(primary.alternatives)
-    if review is not None:
-        cands += [review.species or "", *review.alternatives]
+    cands = list(chosen.alternatives)
+    if other is not None:
+        cands += [other.species or "", *other.alternatives]
     for c in cands:
         n = norm_species(c)
         if n and n != "unknown" and n not in seen:
@@ -158,12 +159,13 @@ async def analyze_image(image_path: Path, sighting_id: str, db: Database) -> Vis
     if analysis.is_bird:
         species = display_name(analysis.species) if is_real_species(analysis.species) else "Unidentified bird"
 
-    # Second opinion where a wrong answer is most visible: possible new species, or a shaky call.
+    # Second opinion where a wrong answer is most visible: a new or unusual species (what a cheap model
+    # tends to invent), or a shaky call.
     review: VisionAnalysis | None = None
     disputed = False
     reviewed_by = None
     if (VISION_REVIEW_MODEL and used != VISION_REVIEW_MODEL and analysis.is_bird
-            and (db.is_lifer(species) or analysis.confidence == "low")):
+            and (db.is_uncommon(species) or analysis.confidence == "low")):
         try:
             review = await _run_model(VISION_REVIEW_MODEL, data)
             _store(db, sighting_id, review, VISION_REVIEW_MODEL, "review")
@@ -172,27 +174,34 @@ async def analyze_image(image_path: Path, sighting_id: str, db: Database) -> Vis
         except Exception:
             logger.exception("Review model failed; keeping primary result")
 
+    # The reviewer is the stronger model, so when the two disagree on a bird its answer stands and the
+    # primary's guess becomes an alternative. The Telegram confirm message still lets a human overrule it.
+    chosen, chosen_model = analysis, used
+    if disputed and review is not None and review.is_bird and is_real_species(review.species):
+        chosen, chosen_model = review, VISION_REVIEW_MODEL
+        species = display_name(review.species)
+
     result = VisionResult(
-        is_bird=analysis.is_bird,
-        animal_type=analysis.animal_type,
+        is_bird=chosen.is_bird,
+        animal_type=chosen.animal_type,
         species=species,
-        species_latin=analysis.species_latin,
-        confidence=analysis.confidence,
-        count=analysis.count,
-        sex=analysis.sex,
-        age=analysis.age,
-        behavior=analysis.behavior,
-        notable=analysis.notable,
-        raw_response=analysis.model_dump_json(),
-        alternatives=_merge_alternatives(analysis, review),
-        model=used,
+        species_latin=chosen.species_latin,
+        confidence=chosen.confidence,
+        count=chosen.count,
+        sex=chosen.sex,
+        age=chosen.age,
+        behavior=chosen.behavior,
+        notable=chosen.notable,
+        raw_response=chosen.model_dump_json(),
+        alternatives=_merge_alternatives(species, chosen, review if chosen is analysis else analysis),
+        model=chosen_model,
         reviewed_by=reviewed_by,
         disputed=disputed,
     )
 
     if result.is_bird and result.species:
         logger.info("Vision: %s (%s, %s)%s", result.species, result.confidence, result.behavior,
-                    f" DISPUTED by {reviewed_by}: {review.species if review else None}" if disputed else "")
+                    f" DISPUTED, {reviewed_by} says {review.species if review else None}" if disputed else "")
     elif result.animal_type:
         logger.info("Vision: %s detected (%s)", result.animal_type, result.behavior)
     else:

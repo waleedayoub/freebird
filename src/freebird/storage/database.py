@@ -137,6 +137,19 @@ class Database:
         ).fetchall()
         return all(norm_species(r["species"]) != key for r in rows)
 
+    def is_uncommon(self, species: str, share: float = 0.01, min_total: int = 300) -> bool:
+        """True for a new species (a lifer candidate) or one under `share` of all sightings, the
+        species a cheap model most often invents. Needs `min_total` sightings before 'rare' means much."""
+        if not is_real_species(species):
+            return False
+        counts: dict[str, int] = {}
+        for r in self.conn.execute("SELECT species FROM sightings WHERE species IS NOT NULL"):
+            k = norm_species(r["species"])
+            if k != "unknown":
+                counts[k] = counts.get(k, 0) + 1
+        n = counts.get(norm_species(species), 0)
+        return n == 0 or (sum(counts.values()) >= min_total and n / sum(counts.values()) < share)
+
     def set_species(self, sighting_id: str, species: str | None) -> bool:
         """Overwrite a sighting's species (human correction) and recompute its lifer flag."""
         lifer = bool(species) and self.is_lifer(species, exclude_id=sighting_id)
