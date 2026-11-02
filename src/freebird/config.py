@@ -35,12 +35,14 @@ POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
 BIRDNET_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIRDNET_CONFIDENCE_THRESHOLD", "0.5"))
 
 # Vision
-VISION_MODEL: str = os.getenv("VISION_MODEL", "google-gla:gemini-3-flash-preview")
+# Chosen Nov 2026 from the jury eval plus a Merlin check (eval_jury.py): Sonnet 5.5 names species best
+# (~90% vs the jury, 9/13 vs Merlin) at ~$0.0055/event; the old Gemini 3 Flash scored ~65% and 5/13.
+VISION_MODEL: str = os.getenv("VISION_MODEL", "anthropic:claude-sonnet-5-5")
 VISION_PROMPT: str = os.getenv("VISION_PROMPT", "default_v2")
 GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
-# Optional second opinion. Runs only on lifer candidates and low-confidence birds, and
-# doubles as the failover when the primary model errors. Empty = off.
-VISION_REVIEW_MODEL: str = os.getenv("VISION_REVIEW_MODEL", "")
+# Second opinion from a different vendor, so its mistakes differ. Runs only on lifer candidates and
+# low-confidence birds (~8% of events), and doubles as the failover when the primary errors. Empty = off.
+VISION_REVIEW_MODEL: str = os.getenv("VISION_REVIEW_MODEL", "google-gla:gemini-4-argon")
 
 # Telegram Q&A
 QA_MODEL: str = os.getenv("QA_MODEL", "claude-sonnet-5-5")

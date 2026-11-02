@@ -69,12 +69,12 @@ eval/
 ## Vision
 
 - Species ID uses PydanticAI with structured output (`VisionAnalysis` Pydantic model).
-- Default model: `google-gla:gemini-3-flash-preview` (87% species accuracy on 115 labeled images).
+- Default model: `anthropic:claude-sonnet-5-5` with `google-gla:gemini-4-argon` as the reviewer/failover (chosen Nov 2026 by `eval_jury` plus a Merlin spot-check; ~$0.0055/event primary, so about $0.80/month at October volume and ~$17 at the 3,000/month summer peak, reviewer adds ~$1.50 at peak, double after Argon's $2/$10 promo ends Nov 30). The old Gemini 3 Flash scored lowest (~65% vs the jury, 5/13 vs Merlin) at similar peak cost.
 - Prompts are text files in `eval/prompts/`. Production uses `default_v2.txt`.
 - `load_prompt(name)` reads `eval/prompts/{name}.txt` and interpolates `{location}` from `FEEDER_LOCATION`.
 - Supported model prefixes: `google-gla:` (Gemini), `openai:` (OpenAI), `anthropic:` (Claude).
 - Claude 5.x models reject forced tool calls, so `vision.output_spec()` uses `PromptedOutput` for them. Use it everywhere (production and evals).
-- **Second opinion + failover:** set `VISION_REVIEW_MODEL` to run a second model only on lifer candidates and low-confidence birds. If the two disagree, the lifer alert becomes a Telegram message with buttons (`rv:<sighting>:<n>`), and the tap is stored in `human_labels` (future gold labels). The same model is the failover when the primary errors.
+- **Second opinion + failover:** `VISION_REVIEW_MODEL` runs a second model only on lifer candidates and low-confidence birds. If the two disagree, the lifer alert becomes a Telegram message with buttons (`rv:<sighting>:<n>`), and the tap is stored in `human_labels` (future gold labels). The same model is the failover when the primary errors.
 - Species names are normalized by `species.py` (aliases, case, parentheticals) for lifer checks and scoring. It does not restrict what a model may say; fix naming in the prompt.
 - Prompts: `default_v3.txt` adds naming rules and look-alike guidance; `default_v4.txt` requires a best guess instead of "Unidentified bird".
 - `feeder.py` sends a daily 10:00 nudge when bird visits fall to under 25% of the prior two weeks. `/refilled` silences it for 4 days. State lives in the `kv` table.
@@ -116,13 +116,13 @@ Required in `.env` (see `.env.example`):
 - `ANTHROPIC_API_KEY` — optional, for Claude Q&A
 
 Optional:
-- `VISION_MODEL` — defaults to `google-gla:gemini-3-flash-preview`
+- `VISION_MODEL` — defaults to `anthropic:claude-sonnet-5-5`
 - `VISION_PROMPT` — defaults to `default_v2`
 - `FEEDER_LOCATION` — e.g. `Toronto, Ontario, Canada` (used in vision prompt)
 - `TIMEZONE` — defaults to `America/Toronto` (DST-aware via `zoneinfo`)
 - `FREEBIRD_DATA_DIR` — defaults to `/data` (Docker) or override for local dev
 - `POLL_INTERVAL_SECONDS` — defaults to `15`
-- `VISION_REVIEW_MODEL` — optional second-opinion/failover model (empty = off)
+- `VISION_REVIEW_MODEL` — second-opinion/failover model, defaults to `google-gla:gemini-4-argon` (empty = off)
 - `QA_MODEL` — defaults to `claude-sonnet-5-5`
 
 ## Deployment

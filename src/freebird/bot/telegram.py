@@ -86,7 +86,8 @@ class TelegramBot:
     ) -> None:
         """Possible new species the models weren't sure about: ask which it is."""
         options = options[:4]
-        caption = f"Possible NEW LIFER: {options[0]}? I'm not sure. Which is it?"
+        caption = (f"Possible NEW LIFER: {options[0]}? The two models were not sure. Tap the right one (Merlin can help), "
+                   f"or ignore this and I'll keep {options[0]}.")
         rows = [[InlineKeyboardButton(o, callback_data=f"rv:{sighting_id}:{i}")]
                 for i, o in enumerate(options)]
         rows.append([InlineKeyboardButton("None of these", callback_data=f"rv:{sighting_id}:x")])

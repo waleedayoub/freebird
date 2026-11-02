@@ -1,0 +1,97 @@
+{
+  "0cb8922b18e54baf": {
+    "label": "European Starling",
+    "is_bird": true,
+    "unsure": false
+  },
+  "0e349f370b624a03": {
+    "label": "Chipping Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "0eb42c79300643f9": {
+    "label": "Northern Cardinal",
+    "is_bird": true,
+    "unsure": false
+  },
+  "1307d468fbdb4fba": {
+    "label": "Northern Cardinal",
+    "is_bird": true,
+    "unsure": false
+  },
+  "145809abc1694909": {
+    "label": "Song Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "167ca1e92a9145a1": {
+    "label": "Northern Cardinal",
+    "is_bird": true,
+    "unsure": false
+  },
+  "1912cd01482e4344": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  },
+  "1c722bbb0ff44ba6": {
+    "label": "House Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "21a34bf609bd4f5f": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  },
+  "26e3e0dea5f34a05": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  },
+  "3d0889c985f54f49": {
+    "label": "European Starling",
+    "is_bird": true,
+    "unsure": false
+  },
+  "400a9e97dbc24c84": {
+    "label": "Song Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "4b4436b9e5864ac8": {
+    "label": "American Crow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "4cdd3694a6914b11": {
+    "label": "Song Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "55bf37feae1b46ff": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  },
+  "587e5a619889483a": {
+    "label": "Chipping Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "5c3ae619597640aa": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  },
+  "60132f9f6835406a": {
+    "label": "House Sparrow",
+    "is_bird": true,
+    "unsure": false
+  },
+  "6f2e1b0f78154be1": {
+    "label": "unsure",
+    "is_bird": false,
+    "unsure": true
+  }
+}

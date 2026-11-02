@@ -28,7 +28,7 @@ See `.env.example` for all options. Required:
 | `VICOHOME_PASSWORD` | VicoHome account password |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | Telegram chat to send notifications to |
-| `VISION_MODEL` | PydanticAI model string (default: `google-gla:gemini-2.5-flash`) |
+| `VISION_MODEL` | PydanticAI model string (default: `anthropic:claude-sonnet-5-5`) |
 | `GOOGLE_API_KEY` | Google AI API key (for Gemini vision) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (optional, for Claude Q&A chatbot) |
 
@@ -44,7 +44,8 @@ Single Python asyncio process running two concurrent tasks:
 Species identification uses [PydanticAI](https://ai.pydantic.dev/) with structured output. The vision model and prompt are configurable via env vars:
 
 ```bash
-VISION_MODEL=google-gla:gemini-3-flash-preview     # Gemini (default)
+VISION_MODEL=anthropic:claude-sonnet-5-5             # Claude (default); reviewer defaults to google-gla:gemini-4-argon
+VISION_MODEL=google-gla:gemini-3-flash-preview       # Gemini
 VISION_MODEL=anthropic:claude-sonnet-4-5-20250929   # Claude
 VISION_MODEL=openai:gpt-4o                          # OpenAI
 
